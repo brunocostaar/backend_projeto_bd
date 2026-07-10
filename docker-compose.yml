@@ -1,0 +1,36 @@
+# Sistema de Gestão Hospitalar - PostgreSQL de desenvolvimento
+#
+# Subir (primeira vez executa 01_schema.sql e 02_seed.sql automaticamente):
+#   docker compose up -d
+#
+# Conectar:
+#   docker compose exec db psql -U postgres -d hospital_universitario
+#
+# Recriar o banco do zero (apaga os dados e roda os scripts de novo):
+#   docker compose down -v
+#   docker compose up -d
+#
+# Obs.: os scripts em /docker-entrypoint-initdb.d só rodam quando o volume
+# de dados está vazio (primeiro up ou após down -v).
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: hospital_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./02_seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d hospital_universitario"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
