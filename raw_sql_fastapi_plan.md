@@ -1,122 +1,106 @@
-# 🛠️ Plano: CRUD FastAPI com SQL Manual (Raw SQL)
+# Plano: CRUD FastAPI com SQL puro
 
-Este plano foi adaptado para usar **consultas SQL manuais (Raw SQL)** em vez do ORM do SQLAlchemy. Isso simplifica o entendimento da herança, pois tratamos as tabelas no banco como tabelas relacionais clássicas conectadas por Chave Estrangeira (FK).
+Este plano orientou a construção da API usando consultas SQL escritas à mão,
+em vez do ORM do SQLAlchemy. A herança do modelo (Pessoa, Paciente,
+Profissional, Preceptor, Residente) é tratada como tabelas relacionais comuns
+ligadas por chave estrangeira.
 
----
+## Instalação
 
-## 1. Comando de Instalação
-
-Abra o terminal na pasta do seu projeto e execute o comando abaixo para instalar as bibliotecas necessárias no seu ambiente virtual:
+No ambiente virtual do projeto:
 
 ```bash
-.venv/bin/pip install psycopg2-binary sqlalchemy
+pip install fastapi uvicorn psycopg2-binary sqlalchemy
 ```
 
-> **Por que SQLAlchemy se vamos usar SQL manual?**
-> Usaremos o SQLAlchemy apenas como um **gerenciador de conexão (Connection Pool)**. Ele cuidará de abrir, fechar e reaproveitar conexões com o PostgreSQL de forma segura e eficiente, permitindo rodar consultas usando a função `db.execute(text("SELECT ..."))`.
+Por que instalar SQLAlchemy se as consultas são SQL puro? Ele é usado apenas
+como gerenciador de conexões: abre, fecha e reaproveita conexões com o
+PostgreSQL, e permite executar consultas com `db.execute(text("SELECT ..."))`.
 
----
-
-## 2. Estrutura de Arquivos
-
-Aqui estão os arquivos que você deve criar na raiz do seu projeto:
+## Estrutura de arquivos
 
 ```
 projeto-bd/
-├── database.py              ← Configuração da conexão com o banco e gerador de sessões
-├── main.py                  ← Arquivo principal (já existe, você vai registrar as rotas aqui)
-├── schemas/                 ← Validação dos dados que entram e saem da API (Pydantic)
+├── database.py              conexão com o banco e gerador de sessões
+├── main.py                  aplicação principal, registra as rotas
+├── schemas/                 validação de entrada e saída (Pydantic)
 │   ├── __init__.py
-│   ├── pessoa.py            ← Schemas para Pessoa, Paciente, Preceptor, Residente
-│   ├── unidade.py           ← Schemas para Unidades de Saúde
-│   ├── procedimento.py      ← Schemas para Procedimentos e Realizados
-│   ├── atendimento.py       ← Schemas para Atendimentos
-│   └── escala.py            ← Schemas para Escalas
-└── routers/                 ← Endpoints (Ações HTTP: POST, GET, PUT, DELETE)
+│   ├── pessoa.py            Pessoa, Paciente, Preceptor, Residente
+│   ├── unidade.py
+│   ├── procedimento.py      Procedimento e Procedimento Realizado
+│   ├── atendimento.py
+│   └── escala.py
+└── routers/                 endpoints (POST, GET, PUT, DELETE)
     ├── __init__.py
-    ├── pessoa.py            ← Endpoints de Pessoas, Pacientes e Profissionais
+    ├── pessoa.py            Pacientes, Preceptores e Residentes
     ├── unidade.py
     ├── procedimento.py
+    ├── procedimento_realizado.py
     ├── atendimento.py
     └── escala.py
 ```
 
----
+## Endpoints
 
-## 3. Endpoints a Serem Gerados
+### routers/unidade.py
 
-Aqui está a lista exata de endpoints que você deve declarar em cada arquivo da pasta `routers/`.
+Tabela isolada, boa para testar a primeira consulta.
 
-### 📍 `routers/unidade.py` (Recomendo começar por aqui)
-Tabela isolada, ideal para testar a primeira consulta SQL manual.
-* **`POST /unidades/`**: Insere uma nova unidade (`INSERT INTO unidade...`).
-* **`GET /unidades/`**: Retorna todas as unidades (`SELECT * FROM unidade`).
-* **`GET /unidades/{id}`**: Busca uma unidade específica (`SELECT * FROM unidade WHERE id_unidade = :id`).
-* **`PUT /unidades/{id}`**: Atualiza dados da unidade (`UPDATE unidade SET...`).
-* **`DELETE /unidades/{id}`**: Remove a unidade (`DELETE FROM unidade WHERE...`).
+- `POST /unidades/`: insere uma unidade
+- `GET /unidades/`: lista todas
+- `GET /unidades/{id}`: busca uma unidade
+- `PUT /unidades/{id}`: atualiza
+- `DELETE /unidades/{id}`: remove
 
----
+### routers/procedimento.py e procedimento_realizado.py
 
-### 📍 `routers/procedimento.py`
-Gerencia a tabela `procedimento` e a tabela associativa `procedimento_realizado`.
-* **`POST /procedimentos/`**: Cria procedimento (`INSERT INTO procedimento...`).
-* **`GET /procedimentos/`**: Lista todos.
-* **`PUT /procedimentos/{id}`**: Atualiza (`incluindo nivel_risco`).
-* **`DELETE /procedimentos/{id}`**: Remove.
-* **`POST /procedimentos-realizados/`**: Registra quantidade e tempo real de um procedimento em um atendimento (`INSERT INTO procedimento_realizado...`).
-* **`GET /procedimentos-realizados/{id_atendimento}/{id_procedimento}`**: Detalha um registro específico.
-* **`DELETE /procedimentos-realizados/{id_atendimento}/{id_procedimento}`**: Remove o registro.
+- `POST /procedimentos/`, `GET /procedimentos/`, `GET/PUT/DELETE
+  /procedimentos/{id}`: CRUD do catálogo de procedimentos, incluindo
+  `nivel_risco`
+- `POST /procedimentos-realizados/`: registra quantidade, tempo real e
+  observação de um procedimento em um atendimento
+- `GET/PUT/DELETE /procedimentos-realizados/{id_atendimento}/{id_procedimento}`:
+  operações sobre um registro, identificado pela chave composta
 
----
+### routers/pessoa.py (herança em SQL)
 
-### 📍 `routers/pessoa.py` (Lógica da Herança em SQL)
-Como o banco de dados tem herança física (FKs para a tabela pai), os endpoints específicos devem lidar com essa lógica manualmente usando transações.
+Como o banco tem herança física (a tabela filha aponta para a pai por FK),
+os endpoints inserem em mais de uma tabela dentro da mesma transação.
 
-#### Endpoints de Paciente:
-* **`POST /pacientes/`**:
-  1. Abre transação.
-  2. Executa `INSERT INTO pessoa (nome, cpf, data_nascimento, is_flamengo, telefone, endereco) VALUES (...) RETURNING id_pessoa;`.
-  3. Pega o `id_pessoa` retornado e executa `INSERT INTO paciente (id_pessoa, num_convenio, alergias, grupo_sanguineo) VALUES (:id_pessoa, ...);`.
-  4. Confirma a transação.
-* **`GET /pacientes/`**:
-  - Consulta: `SELECT * FROM paciente INNER JOIN pessoa ON paciente.id_pessoa = pessoa.id_pessoa;`
-* **`GET /pacientes/{id}`**:
-  - Consulta com JOIN filtrando por `id_pessoa`.
-* **`PUT /pacientes/{id}`**:
-  - Atualiza as duas tabelas (`pessoa` e `paciente`) sob o mesmo ID.
-* **`DELETE /pacientes/{id}`**:
-  - Remove de `paciente`, depois de `pessoa`.
+Paciente:
 
-#### Endpoints de Preceptor e Residente:
-Siga a mesma lógica acima. No POST, você insere na tabela correspondente.
-* **`POST /preceptores/`**: Insere em `pessoa` → pega ID → insere em `profissional` → pega ID → insere em `preceptor`.
-* **`GET /preceptores/`**: Faz um `JOIN` de `preceptor` + `profissional` + `pessoa`.
-* **`POST /residentes/`**: Insere em `pessoa` → insere em `profissional` → insere em `residente`.
-* **`GET /residentes/`**: Faz um `JOIN` de `residente` + `profissional` + `pessoa`.
+- `POST /pacientes/`: abre transação, insere em `pessoa` com
+  `RETURNING id_pessoa`, usa esse id para inserir em `paciente`
+  (`numero_convenio`, `grupo_sanguineo`) e grava cada alergia como uma linha
+  na tabela `alergia`. Confirma tudo no final; qualquer falha desfaz a
+  transação inteira.
+- `GET /pacientes/` e `GET /pacientes/{id}`: JOIN de `paciente` com `pessoa`,
+  reagrupando as alergias em uma string com `string_agg`
+- `PUT /pacientes/{id}`: atualiza `pessoa` e `paciente`, apaga as alergias
+  antigas e insere as novas
+- `DELETE /pacientes/{id}`: remove de `paciente` e depois de `pessoa`
+  (as alergias saem em cascata)
 
----
+Preceptor e Residente seguem a mesma lógica, com um nível a mais:
+`pessoa`, depois `profissional`, depois `preceptor` ou `residente`.
+A listagem faz JOIN das três tabelas. Detalhe do PostgreSQL: colunas como
+CPF e CRM precisam de alias com aspas (`pe.CPF AS "CPF"`) porque o banco
+devolve nomes em minúsculo e o Pydantic diferencia maiúsculas.
 
-### 📍 `routers/atendimento.py`
-Gerencia os atendimentos médicos.
-* **`POST /atendimentos/`**: Registra atendimento (`INSERT INTO atendimento...`).
-  - *Validação manual*: Antes de inserir, execute consultas para garantir que `id_paciente`, `id_residente` e `id_preceptor` existem.
-* **`GET /atendimentos/`**: Lista atendimentos (com opção de trazer os nomes do paciente e médicos via `JOIN`).
-* **`DELETE /atendimentos/{id}`**: Remove.
+### routers/atendimento.py
 
----
+- `POST /atendimentos/`: antes de inserir, consulta se `id_paciente`,
+  `id_residente` e `id_preceptor` existem e devolve 400 se algum não existir
+- `GET /atendimentos/`, `GET/PUT/DELETE /atendimentos/{id}`: demais operações
 
-### 📍 `routers/escala.py`
-Controla a alocação de residentes e preceptores.
-* **`POST /escalas/`**: Cria uma escala (`INSERT INTO escala...`).
-  - *Validação de Unique*: O banco lançará erro se a constraint `UNIQUE(id_unidade, dia_semana, turno, id_residente)` for violada. Capture essa exceção e retorne uma mensagem amigável (ex: `HTTP 409 Conflict`).
-* **`GET /escalas/`**: Lista as escalas configuradas.
-* **`DELETE /escalas/{id}`**: Remove a escala.
+### routers/escala.py
 
----
+- `POST /escalas/`: valida as FKs e verifica a restrição
+  `UNIQUE(id_unidade, dia_semana, turno, id_residente)` antes de inserir,
+  devolvendo 409 em caso de conflito
+- `GET /escalas/`, `GET/PUT/DELETE /escalas/{id}`: demais operações
 
-## 4. Dica: Como executar SQL Manual no FastAPI
-
-Para executar SQL manual, você usará a função `text` do SQLAlchemy dentro da rota:
+## Como executar SQL puro no FastAPI
 
 ```python
 from fastapi import APIRouter, Depends
@@ -128,11 +112,9 @@ router = APIRouter()
 
 @router.get("/unidades/")
 def listar_unidades(db: Session = Depends(get_db)):
-    # Usando SQL manual puro
     query = text("SELECT id_unidade, nome, tipo, capacidade_leitos FROM unidade")
     result = db.execute(query)
-    
-    # O SQLAlchemy retorna linhas (Row objects), convertemos para uma lista de dicionários
-    unidades = [dict(row._mapping) for row in result]
-    return unidades
+
+    # o SQLAlchemy devolve objetos Row; convertemos para dicionários
+    return [dict(row._mapping) for row in result]
 ```
