@@ -3,7 +3,7 @@ from sqlalchemy.orm import sessionmaker
 
 # Configuração da URL de conexão do PostgreSQL
 # Substitua os valores abaixo pelos dados do seu banco de dados local
-SQLALCHEMY_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/projeto_bd"
+SQLALCHEMY_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/hospital_universitario"
 
 # O Engine gerencia a conexão física com o banco de dados
 engine = create_engine(SQLALCHEMY_DATABASE_URL)

@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # ==============================================================================
 
 class ProcedimentoBase(BaseModel):
-    codigo: str = Field(..., examples=["PROC-889"])
+    codigo: int = Field(..., examples=[889])
     nome: str = Field(..., examples=["Eletrocardiograma (ECG)"])
     tempo_medio_minutos: int = Field(..., examples=[20])
     nivel_risco: str = Field(..., examples=["Baixo"])  # Coluna ausente adicionada

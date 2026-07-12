@@ -74,7 +74,8 @@ class PreceptorRead(ProfissionalRead):
 # ==========================================
 
 class ResidenteCreate(ProfissionalCreate):
-    ano_residencia: int = Field(..., examples=[2], description="Ano atual da residência (ex: 1, 2, 3)")
+    ano_residencia: str = Field(..., examples=["R2"], description="Ano atual da residência (ex: R1, R2, R3)")
 
 class ResidenteRead(ProfissionalRead):
-    ano_residencia: int = Field(..., examples=[2])
+    ano_residencia: str = Field(..., examples=["R2"])
+
