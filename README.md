@@ -42,10 +42,15 @@ docker compose down -v
 docker compose up -d
 ```
 
+Se a porta 5432 já estiver em uso na máquina (um PostgreSQL local, por
+exemplo), altere o mapeamento em `docker-compose.yml` para outra porta, como
+`"15432:5432"`, e ajuste a conexão em `database.py`.
+
 ## Estrutura do projeto
 
 - `01_schema.sql`: criação das tabelas, com PK, FK, CHECK, NOT NULL e UNIQUE
 - `02_seed.sql`: massa de dados de teste
+- `04_analiticas.sql`: as 4 consultas analíticas da Etapa 1
 - `docker-compose.yml`: PostgreSQL 16 com execução automática dos scripts
 - `database.py`: conexão com o banco e injeção de sessão nas rotas
 - `main.py`: aplicação FastAPI e registro dos routers
@@ -68,6 +73,30 @@ A lista completa, com os corpos de requisição, está em `/docs`. Resumo:
   preceptor antes de inserir
 - `/escalas/`: CRUD completo, devolvendo 409 quando a escala viola a
   restrição de unicidade (unidade, dia, turno, residente)
+
+## Consultas analíticas
+
+O arquivo `04_analiticas.sql` contém as 4 consultas da Etapa 1. Elas não
+rodam automaticamente na subida do contêiner (não alteram o banco); execute
+com o banco já populado:
+
+```
+docker compose exec -T db psql -U postgres -d hospital_universitario < 04_analiticas.sql
+```
+
+1. **Ranking de residentes** por número de atendimentos (`LEFT JOIN` para que
+   residente sem atendimento apareça com total 0).
+2. **Preceptores com mais de 5 atendimentos** em um mês (`GROUP BY` +
+   `HAVING`; troque a data no `WHERE` para consultar outro mês — o seed tem o
+   caso do preceptor Fernando Alves com 6 atendimentos em julho/2026).
+3. **Plantões por residente em cada unidade.** Decisão de projeto: a tabela
+   `escala` é uma grade semanal (`dia_semana` + `turno`), sem data concreta,
+   então "mês corrente" admite duas leituras e a consulta traz as duas — a
+   versão A conta os slots semanais de cada residente por unidade, e a
+   versão B projeta a grade nos dias do mês atual (uma escala de segunda
+   conta uma vez por segunda-feira existente no mês).
+4. **Pacientes que nunca realizaram procedimento de risco ALTO**
+   (`NOT EXISTS`, que ao contrário de `NOT IN` não quebra com `NULL`).
 
 ## Observações
 
