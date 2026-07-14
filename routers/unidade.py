@@ -41,10 +41,28 @@ def criar_unidade(unidade: UnidadeCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/", response_model=list[UnidadeRead])
-def listar_unidades(db: Session = Depends(get_db)):
-    query = text("SELECT id_unidade, nome, tipo, capacidade_leitos FROM unidade;")
-    result = db.execute(query)
-    
+def listar_unidades(
+    nome: str | None = None,
+    tipo: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Lista as unidades. Aceita filtros opcionais: nome e tipo (busca parcial).
+    """
+    sql = "SELECT id_unidade, nome, tipo, capacidade_leitos FROM unidade"
+    condicoes, params = [], {}
+    if nome:
+        condicoes.append("nome ILIKE :nome")
+        params["nome"] = f"%{nome}%"
+    if tipo:
+        condicoes.append("tipo ILIKE :tipo")
+        params["tipo"] = f"%{tipo}%"
+    if condicoes:
+        sql += " WHERE " + " AND ".join(condicoes)
+    sql += " ORDER BY nome;"
+
+    result = db.execute(text(sql), params)
+
     # Converte os resultados para dicionários compatíveis com UnidadeRead
     return [dict(row._mapping) for row in result]
 

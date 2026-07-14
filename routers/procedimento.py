@@ -46,12 +46,32 @@ def criar_procedimento(procedimento: ProcedimentoCreate, db: Session = Depends(g
 
 
 @router.get("/procedimentos/", response_model=list[ProcedimentoRead])
-def listar_procedimentos(db: Session = Depends(get_db)):
+def listar_procedimentos(
+    nome: str | None = None,
+    nivel_risco: str | None = None,
+    codigo: int | None = None,
+    db: Session = Depends(get_db),
+):
     """
-    Retorna todos os procedimentos cadastrados usando SQL Puro.
+    Retorna os procedimentos cadastrados usando SQL Puro.
+    Aceita filtros opcionais: nome (busca parcial), nivel_risco e codigo (exatos).
     """
-    query = text("SELECT id_procedimento, codigo, nome, tempo_medio_minutos, nivel_risco FROM procedimento;")
-    result = db.execute(query)
+    sql = "SELECT id_procedimento, codigo, nome, tempo_medio_minutos, nivel_risco FROM procedimento"
+    condicoes, params = [], {}
+    if nome:
+        condicoes.append("nome ILIKE :nome")
+        params["nome"] = f"%{nome}%"
+    if nivel_risco:
+        condicoes.append("nivel_risco = :nivel_risco")
+        params["nivel_risco"] = nivel_risco
+    if codigo is not None:
+        condicoes.append("codigo = :codigo")
+        params["codigo"] = codigo
+    if condicoes:
+        sql += " WHERE " + " AND ".join(condicoes)
+    sql += " ORDER BY nome;"
+
+    result = db.execute(text(sql), params)
     return [dict(row._mapping) for row in result]
 
 

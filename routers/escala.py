@@ -77,12 +77,43 @@ def criar_escala(escala: EscalaCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/", response_model=list[EscalaRead])
-def listar_escalas(db: Session = Depends(get_db)):
-    query = text("""
-        SELECT id_escala, id_unidade, dia_semana, turno, id_residente, id_preceptor 
-        FROM escala;
-    """)
-    result = db.execute(query)
+def listar_escalas(
+    id_unidade: int | None = None,
+    id_residente: int | None = None,
+    id_preceptor: int | None = None,
+    dia_semana: str | None = None,
+    turno: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Lista as escalas. Aceita filtros opcionais: id_unidade, id_residente,
+    id_preceptor, dia_semana e turno.
+    """
+    sql = """
+        SELECT id_escala, id_unidade, dia_semana, turno, id_residente, id_preceptor
+        FROM escala
+    """
+    condicoes, params = [], {}
+    if id_unidade is not None:
+        condicoes.append("id_unidade = :id_unidade")
+        params["id_unidade"] = id_unidade
+    if id_residente is not None:
+        condicoes.append("id_residente = :id_residente")
+        params["id_residente"] = id_residente
+    if id_preceptor is not None:
+        condicoes.append("id_preceptor = :id_preceptor")
+        params["id_preceptor"] = id_preceptor
+    if dia_semana:
+        condicoes.append("dia_semana = :dia_semana")
+        params["dia_semana"] = dia_semana
+    if turno:
+        condicoes.append("turno = :turno")
+        params["turno"] = turno
+    if condicoes:
+        sql += " WHERE " + " AND ".join(condicoes)
+    sql += " ORDER BY id_unidade, dia_semana, turno;"
+
+    result = db.execute(text(sql), params)
     return [dict(row._mapping) for row in result]
 
 

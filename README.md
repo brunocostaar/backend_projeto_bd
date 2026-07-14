@@ -67,12 +67,25 @@ A lista completa, com os corpos de requisição, está em `/docs`. Resumo:
 - `/residentes/`: criar, listar, buscar, atualizar e excluir
 - `/unidades/`: CRUD completo
 - `/procedimentos/`: CRUD completo
-- `/procedimentos-realizados/`: registrar, buscar, atualizar e excluir pela
-  chave composta (atendimento e procedimento)
+- `/procedimentos-realizados/`: listar (com filtros), registrar, buscar,
+  atualizar e excluir pela chave composta (atendimento e procedimento)
 - `/atendimentos/`: CRUD completo, com validação de paciente, residente e
   preceptor antes de inserir
 - `/escalas/`: CRUD completo, devolvendo 409 quando a escala viola a
   restrição de unicidade (unidade, dia, turno, residente)
+
+Todas as listagens aceitam filtros opcionais por query string, montados em
+SQL puro com `WHERE` dinâmico (`ILIKE` nos campos de texto). Exemplos:
+
+```
+GET /pacientes/?nome=ana&grupo_sanguineo=O%2B
+GET /residentes/?especialidade=cardio&ano_residencia=R1
+GET /atendimentos/?id_paciente=1&data=2026-07-02
+GET /procedimentos/?nivel_risco=ALTO
+GET /procedimentos-realizados/?id_atendimento=1&faturado=true
+GET /escalas/?id_unidade=2&turno=manha
+GET /unidades/?tipo=UTI
+```
 
 ## Consultas analíticas
 

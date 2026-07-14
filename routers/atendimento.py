@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db
-from schemas.atendimento import AtendimentoCreate, AtendimentoRead
+from schemas.atendimento import AtendimentoCreate, AtendimentoRead, TempoMedioResidente
 
 router = APIRouter(prefix="/atendimentos", tags=["Atendimentos"])
 
@@ -57,11 +57,59 @@ def criar_atendimento(atendimento: AtendimentoCreate, db: Session = Depends(get_
 
 
 @router.get("/", response_model=list[AtendimentoRead])
-def listar_atendimentos(db: Session = Depends(get_db)):
+def listar_atendimentos(
+    id_paciente: int | None = None,
+    id_residente: int | None = None,
+    id_preceptor: int | None = None,
+    data: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Lista os atendimentos. Aceita filtros opcionais: id_paciente, id_residente,
+    id_preceptor e data (dia exato, formato AAAA-MM-DD).
+    """
+    sql = """
+        SELECT id_atendimento, data_hora, duracao_minutos, id_paciente, id_residente, id_preceptor
+        FROM atendimento
+    """
+    condicoes, params = [], {}
+    if id_paciente is not None:
+        condicoes.append("id_paciente = :id_paciente")
+        params["id_paciente"] = id_paciente
+    if id_residente is not None:
+        condicoes.append("id_residente = :id_residente")
+        params["id_residente"] = id_residente
+    if id_preceptor is not None:
+        condicoes.append("id_preceptor = :id_preceptor")
+        params["id_preceptor"] = id_preceptor
+    if data:
+        condicoes.append("data_hora::date = :data")
+        params["data"] = data
+    if condicoes:
+        sql += " WHERE " + " AND ".join(condicoes)
+    sql += " ORDER BY data_hora DESC;"
 
+    result = db.execute(text(sql), params)
+    return [dict(row._mapping) for row in result]
+
+
+# Atenção: rota fixa declarada ANTES de /{id_atendimento} para não colidir
+@router.get("/tempo-medio-por-residente", response_model=list[TempoMedioResidente])
+def tempo_medio_por_residente(db: Session = Depends(get_db)):
+    """
+    Calcula o tempo médio de duração dos atendimentos por residente
+    (AVG + GROUP BY). LEFT JOIN para incluir residente sem atendimento.
+    """
     query = text("""
-        SELECT id_atendimento, data_hora, duracao_minutos, id_paciente, id_residente, id_preceptor 
-        FROM atendimento;
+        SELECT r.id_profissional AS id_residente,
+               pe.nome,
+               COUNT(a.id_atendimento) AS total_atendimentos,
+               ROUND(AVG(a.duracao_minutos), 1) AS tempo_medio_minutos
+        FROM residente r
+        INNER JOIN pessoa pe ON pe.id_pessoa = r.id_profissional
+        LEFT JOIN atendimento a ON a.id_residente = r.id_profissional
+        GROUP BY r.id_profissional, pe.nome
+        ORDER BY tempo_medio_minutos DESC NULLS LAST, pe.nome;
     """)
     result = db.execute(query)
     return [dict(row._mapping) for row in result]

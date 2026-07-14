@@ -92,18 +92,41 @@ def criar_paciente(paciente: PacienteCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/pacientes/", response_model=list[PacienteRead])
-def listar_pacientes(db: Session = Depends(get_db)):
-    query = text("""
-        SELECT pe.id_pessoa, pe.nome, pe.CPF AS "CPF", pe.data_nascimento, 
+def listar_pacientes(
+    nome: str | None = None,
+    cpf: str | None = None,
+    grupo_sanguineo: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Lista os Pacientes. Aceita filtros opcionais de consulta:
+    nome (busca parcial), cpf (busca parcial) e grupo_sanguineo (exato).
+    """
+    sql = """
+        SELECT pe.id_pessoa, pe.nome, pe.CPF AS "CPF", pe.data_nascimento,
                pe.is_flamengo, pe.telefone, pe.endereco,
-               pa.numero_convenio AS num_convenio, 
-               (SELECT string_agg(al.alergia, ', ') FROM alergia al WHERE al.id_pessoa = pa.id_pessoa) AS alergias, 
+               pa.numero_convenio AS num_convenio,
+               (SELECT string_agg(al.alergia, ', ') FROM alergia al WHERE al.id_pessoa = pa.id_pessoa) AS alergias,
                pa.grupo_sanguineo
         FROM paciente pa
-        INNER JOIN pessoa pe ON pa.id_pessoa = pe.id_pessoa;
-    """)
-    result = db.execute(query)
-    
+        INNER JOIN pessoa pe ON pa.id_pessoa = pe.id_pessoa
+    """
+    condicoes, params = [], {}
+    if nome:
+        condicoes.append("pe.nome ILIKE :nome")
+        params["nome"] = f"%{nome}%"
+    if cpf:
+        condicoes.append("pe.CPF LIKE :cpf")
+        params["cpf"] = f"%{cpf}%"
+    if grupo_sanguineo:
+        condicoes.append("pa.grupo_sanguineo = :grupo_sanguineo")
+        params["grupo_sanguineo"] = grupo_sanguineo
+    if condicoes:
+        sql += " WHERE " + " AND ".join(condicoes)
+    sql += " ORDER BY pe.nome;"
+
+    result = db.execute(text(sql), params)
+
     # Converte os resultados para dicionários compatíveis com o PacienteRead
     return [dict(row._mapping) for row in result]
 
@@ -309,20 +332,40 @@ def criar_preceptor(preceptor: PreceptorCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/preceptores/", response_model=list[PreceptorRead])
-def listar_preceptores(db: Session = Depends(get_db)):
+def listar_preceptores(
+    nome: str | None = None,
+    cpf: str | None = None,
+    especialidade: str | None = None,
+    db: Session = Depends(get_db),
+):
     """
-    Retorna todos os Preceptores fazendo JOIN entre as 3 tabelas.
+    Retorna os Preceptores fazendo JOIN entre as 3 tabelas.
+    Aceita filtros opcionais: nome, cpf e especialidade (busca parcial).
     """
-    query = text("""
-        SELECT pe.id_pessoa, pe.nome, pe.CPF AS "CPF", pe.data_nascimento, 
+    sql = """
+        SELECT pe.id_pessoa, pe.nome, pe.CPF AS "CPF", pe.data_nascimento,
                pe.is_flamengo, pe.telefone, pe.endereco,
                pr.CRM AS "CRM", pr.data_admissao, pr.especialidade,
                pt.titulacao
         FROM preceptor pt
         INNER JOIN profissional pr ON pt.id_profissional = pr.id_pessoa
-        INNER JOIN pessoa pe ON pr.id_pessoa = pe.id_pessoa;
-    """)
-    result = db.execute(query)
+        INNER JOIN pessoa pe ON pr.id_pessoa = pe.id_pessoa
+    """
+    condicoes, params = [], {}
+    if nome:
+        condicoes.append("pe.nome ILIKE :nome")
+        params["nome"] = f"%{nome}%"
+    if cpf:
+        condicoes.append("pe.CPF LIKE :cpf")
+        params["cpf"] = f"%{cpf}%"
+    if especialidade:
+        condicoes.append("pr.especialidade ILIKE :especialidade")
+        params["especialidade"] = f"%{especialidade}%"
+    if condicoes:
+        sql += " WHERE " + " AND ".join(condicoes)
+    sql += " ORDER BY pe.nome;"
+
+    result = db.execute(text(sql), params)
     return [dict(row._mapping) for row in result]
 
 
@@ -399,20 +442,44 @@ def criar_residente(residente: ResidenteCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/residentes/", response_model=list[ResidenteRead])
-def listar_residentes(db: Session = Depends(get_db)):
+def listar_residentes(
+    nome: str | None = None,
+    cpf: str | None = None,
+    especialidade: str | None = None,
+    ano_residencia: str | None = None,
+    db: Session = Depends(get_db),
+):
     """
-    Retorna todos os Residentes fazendo JOIN entre as 3 tabelas.
+    Retorna os Residentes fazendo JOIN entre as 3 tabelas.
+    Aceita filtros opcionais: nome, cpf, especialidade (parcial) e ano_residencia (exato).
     """
-    query = text("""
-        SELECT pe.id_pessoa, pe.nome, pe.CPF AS "CPF", pe.data_nascimento, 
+    sql = """
+        SELECT pe.id_pessoa, pe.nome, pe.CPF AS "CPF", pe.data_nascimento,
                pe.is_flamengo, pe.telefone, pe.endereco,
                pr.CRM AS "CRM", pr.data_admissao, pr.especialidade,
                rs.ano_residencia
         FROM residente rs
         INNER JOIN profissional pr ON rs.id_profissional = pr.id_pessoa
-        INNER JOIN pessoa pe ON pr.id_pessoa = pe.id_pessoa;
-    """)
-    result = db.execute(query)
+        INNER JOIN pessoa pe ON pr.id_pessoa = pe.id_pessoa
+    """
+    condicoes, params = [], {}
+    if nome:
+        condicoes.append("pe.nome ILIKE :nome")
+        params["nome"] = f"%{nome}%"
+    if cpf:
+        condicoes.append("pe.CPF LIKE :cpf")
+        params["cpf"] = f"%{cpf}%"
+    if especialidade:
+        condicoes.append("pr.especialidade ILIKE :especialidade")
+        params["especialidade"] = f"%{especialidade}%"
+    if ano_residencia:
+        condicoes.append("rs.ano_residencia = :ano_residencia")
+        params["ano_residencia"] = ano_residencia
+    if condicoes:
+        sql += " WHERE " + " AND ".join(condicoes)
+    sql += " ORDER BY pe.nome;"
+
+    result = db.execute(text(sql), params)
     return [dict(row._mapping) for row in result]
 
 

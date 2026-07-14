@@ -19,3 +19,7 @@ class ProcedimentoRealizadoRead(ProcedimentoRealizadoBase):
     id_procedimento: int = Field(..., examples=[1])
 
     model_config = ConfigDict(from_attributes=True)
+
+class ProcedimentoRealizadoDetalhado(ProcedimentoRealizadoRead):
+    """Versão da listagem: inclui o nome do procedimento vindo do JOIN."""
+    nome_procedimento: str = Field(..., examples=["Sutura simples"])
