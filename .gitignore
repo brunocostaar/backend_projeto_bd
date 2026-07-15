@@ -32,6 +32,9 @@ MANIFEST
 # VS Code IDE
 .vscode/
 
+# Claude Code
+.claude/
+
 # Virtual Environments
 .venv/
 venv/
