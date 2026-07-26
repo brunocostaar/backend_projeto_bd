@@ -1,7 +1,11 @@
 # Sistema de Gestão Hospitalar - PostgreSQL de desenvolvimento
 #
-# Subir (primeira vez executa 01_schema.sql e 02_seed.sql automaticamente):
+# Subir (na primeira vez executa os scripts numerados, na ordem: schema e seed
+# da Etapa 1, depois estrutura, procedures, triggers, views e seed da Etapa 2):
 #   docker compose up -d
+#
+# O 04_analiticas.sql e o 10_etapa2_verificacao.sql ficam fora da lista de
+# propósito: só contêm consultas, e são feitos para execução manual.
 #
 # Conectar:
 #   docker compose exec db psql -U postgres -d hospital_universitario
@@ -25,6 +29,11 @@ services:
     volumes:
       - ./01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
       - ./02_seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+      - ./05_etapa2_estrutura.sql:/docker-entrypoint-initdb.d/05_etapa2_estrutura.sql:ro
+      - ./06_etapa2_procedures.sql:/docker-entrypoint-initdb.d/06_etapa2_procedures.sql:ro
+      - ./07_etapa2_triggers.sql:/docker-entrypoint-initdb.d/07_etapa2_triggers.sql:ro
+      - ./08_etapa2_views.sql:/docker-entrypoint-initdb.d/08_etapa2_views.sql:ro
+      - ./09_etapa2_seed.sql:/docker-entrypoint-initdb.d/09_etapa2_seed.sql:ro
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d hospital_universitario"]
