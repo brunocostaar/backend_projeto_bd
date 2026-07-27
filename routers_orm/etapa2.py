@@ -148,12 +148,13 @@ def registrar_atendimento_completo(
         db.rollback()
         raise erro_do_banco(erro) from erro
 
+    total = len(procedimentos)
     return {
         "id_atendimento": id_atendimento,
-        "procedimentos_inseridos": len(procedimentos),
+        "procedimentos_inseridos": total,
         "mensagem": (
-            f"Atendimento {id_atendimento} gravado com {len(procedimentos)} "
-            "procedimento(s)."
+            f"Atendimento {id_atendimento} gravado com {total} "
+            f"procedimento{'s' if total > 1 else ''}."
         ),
     }
 
@@ -187,13 +188,14 @@ def reajustar_escala(dados: ReajustarEscala, db: Session = Depends(get_orm_db)):
 
     if movidas == 0:
         mensagem = (
-            f"Nenhum plantão do residente {dados.id_residente} em "
-            f"{dados.dia_origem} {dados.turno_origem}; nada foi alterado."
+            f"O residente {dados.id_residente} não tem plantão em "
+            f"{dados.dia_origem} {dados.turno_origem}. Nada foi alterado."
         )
     else:
+        quantos = "1 plantão movido" if movidas == 1 else f"{movidas} plantões movidos"
         mensagem = (
-            f"{movidas} plantão(ões) movido(s) de {dados.dia_origem} "
-            f"{dados.turno_origem} para {dados.dia_destino} {dados.turno_destino}."
+            f"{quantos} de {dados.dia_origem} {dados.turno_origem} "
+            f"para {dados.dia_destino} {dados.turno_destino}."
         )
     return {"escalas_movidas": movidas, "mensagem": mensagem}
 

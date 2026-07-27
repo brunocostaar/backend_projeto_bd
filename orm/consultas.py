@@ -263,8 +263,8 @@ def comparar_lazy_e_eager(db: Session) -> dict[str, Any]:
         "consultas_eager": consultas_eager,
         "resultados_iguais": nomes_lazy == nomes_eager,
         "observacao": (
-            "O modo sob demanda emite uma consulta inicial e mais duas por "
-            "atendimento ainda não carregado (paciente e pessoa). O adiantado "
-            "resolve tudo em uma instrução com JOIN."
+            "O modo sob demanda faz uma consulta inicial e mais duas por "
+            "atendimento ainda não carregado, uma para paciente e outra para "
+            "pessoa. O adiantado resolve tudo numa instrução com JOIN."
         ),
     }

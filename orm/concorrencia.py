@@ -171,8 +171,7 @@ def cenario_sem_protecao() -> dict[str, Any]:
         ),
         "desfecho": (
             f"{gravaram} transação gravou; a outra foi recusada pela UNIQUE do "
-            "esquema. A consulta prévia das duas não viu conflito nenhum, o que "
-            "mostra por que verificar antes de inserir não basta."
+            "esquema. As duas consultaram antes de gravar e nenhuma viu conflito."
         ),
         "conflito_evitado": gravaram == 1,
         "log": registro.ordenadas(),
@@ -203,7 +202,7 @@ def cenario_lock_pessimista() -> dict[str, Any]:
                     .where(Residente.id_profissional == ID_RESIDENTE)
                     .with_for_update()
                 ).scalar_one()
-                registro.anotar(nome, "bloqueio obtido, ninguém mais mexe neste residente")
+                registro.anotar(nome, "bloqueio obtido na linha do residente")
 
                 existe = db.execute(
                     select(Escala).where(
@@ -251,9 +250,8 @@ def cenario_lock_pessimista() -> dict[str, Any]:
         ),
         "desfecho": (
             f"{gravaram} gravou e {desistiram} desistiu depois de ver a escala já "
-            "criada. Nenhuma violação de constraint apareceu: a segunda "
-            "transação enxergou o estado atualizado e recusou por regra de "
-            "negócio, com mensagem legível."
+            "criada. A segunda leu o estado atualizado e parou por regra de "
+            "negócio, sem chegar a violar constraint."
         ),
         "conflito_evitado": gravaram == 1 and desistiram == 1,
         "log": registro.ordenadas(),
@@ -328,13 +326,12 @@ def cenario_lock_otimista() -> dict[str, Any]:
     return {
         "cenario": "lock otimista",
         "descricao": (
-            "As duas sessões carregam a mesma escala e alteram o turno. Nenhuma "
-            "bloqueia nada; a coluna versao entra no WHERE do UPDATE."
+            "As duas sessões carregam a mesma escala e mudam o turno. Ninguém "
+            "bloqueia linha: a coluna versao entra no WHERE do UPDATE."
         ),
         "desfecho": (
             f"{gravaram} gravou e {recusados} recebeu StaleDataError. A alteração "
-            "da primeira não foi sobrescrita, que é o que aconteceria sem o "
-            "controle de versão."
+            "da primeira ficou no banco, sem ser sobrescrita pela segunda."
         ),
         "conflito_evitado": gravaram == 1 and recusados == 1,
         "log": registro.ordenadas(),

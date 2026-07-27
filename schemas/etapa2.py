@@ -92,7 +92,7 @@ class RegistrarAtendimentoCompleto(BaseModel):
 class AtendimentoRegistrado(BaseModel):
     id_atendimento: int = Field(..., examples=[16])
     procedimentos_inseridos: int = Field(..., examples=[2])
-    mensagem: str = Field(..., examples=["Atendimento 16 gravado com 2 procedimento(s)."])
+    mensagem: str = Field(..., examples=["Atendimento 16 gravado com 2 procedimentos."])
 
 
 class ReajustarEscala(BaseModel):
