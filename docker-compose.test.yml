@@ -1,0 +1,26 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: hospital_test_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5434:5432"
+    volumes:
+      - ./01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./02_seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+      - ./05_etapa2_estrutura.sql:/docker-entrypoint-initdb.d/05_etapa2_estrutura.sql:ro
+      - ./06_etapa2_procedures.sql:/docker-entrypoint-initdb.d/06_etapa2_procedures.sql:ro
+      - ./07_etapa2_triggers.sql:/docker-entrypoint-initdb.d/07_etapa2_triggers.sql:ro
+      - ./08_etapa2_views.sql:/docker-entrypoint-initdb.d/08_etapa2_views.sql:ro
+      - ./09_etapa2_seed.sql:/docker-entrypoint-initdb.d/09_etapa2_seed.sql:ro
+      - pgdata_test:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d hospital_universitario"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata_test:

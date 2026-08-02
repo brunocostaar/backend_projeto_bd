@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy import Numeric, case, cast, func, select
 from sqlalchemy.orm import Session, aliased, joinedload, selectinload
 
-from orm.modelos import (
+from modelos import (
     Atendimento,
     Paciente,
     Preceptor,

@@ -1,613 +1,394 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from sqlalchemy import text
-from database import get_db
+"""Pacientes, preceptores e residentes com ORM (Etapa 2).
+
+Inclui views e consultas avançadas que antes estavam em /etapa2.
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, status
+from sqlalchemy import select, text
+from sqlalchemy.orm import Session, contains_eager, selectinload
+
+import consultas
+from modelos import Paciente, Pessoa, Preceptor, Profissional, Residente
+from database import get_orm_db
+from routers.comum import (
+    aplicar_alergias,
+    confirmar,
+    dados_do_paciente,
+    dados_do_profissional,
+    nao_encontrado,
+    remover_pessoa_se_orfa,
+)
+from schemas.etapa2 import (
+    PercentualAltoRisco,
+    PreceptorDeFlamenguista,
+    ResidenteSemSupervisor,
+    UltimoAtendimento,
+)
+from schemas.internacao import PacienteInternado
 from schemas.pessoa import (
-    PacienteCreate, PacienteRead,
-    PreceptorCreate, PreceptorRead,
-    ResidenteCreate, ResidenteRead
+    PacienteCreate,
+    PacienteRead,
+    PreceptorCreate,
+    PreceptorRead,
+    ResidenteCreate,
+    ResidenteRead,
 )
 
-router = APIRouter()
-
-# ==============================================================================
-# 🏥 SEÇÃO: PACIENTES (CRUD com Herança Física de 2 Níveis: Pessoa -> Paciente)
-# ==============================================================================
-
-@router.post("/pacientes/", response_model=PacienteRead, status_code=status.HTTP_201_CREATED)
-def criar_paciente(paciente: PacienteCreate, db: Session = Depends(get_db)):
-    """
-    Cria um Paciente. Como Paciente herda de Pessoa no banco físico:
-    1. Insere dados em 'pessoa' e captura o ID gerado.
-    2. Insere dados em 'paciente' usando o mesmo ID.
-    Tudo é feito dentro de uma transação (db.commit / db.rollback).
-    """
-    try:
-        # Inserir dados na tabela PESSOA
-        query_pessoa = text("""
-            INSERT INTO pessoa (nome, CPF, data_nascimento, is_flamengo, telefone, endereco)
-            VALUES (:nome, :cpf, :data_nascimento, :is_flamengo, :telefone, :endereco)
-            RETURNING id_pessoa;
-        """)
-        
-        result_pessoa = db.execute(query_pessoa, {
-            "nome": paciente.nome,
-            "cpf": paciente.CPF,
-            "data_nascimento": paciente.data_nascimento,
-            "is_flamengo": paciente.is_flamengo,
-            "telefone": paciente.telefone,
-            "endereco": paciente.endereco
-        })
-        
-        # Pega o ID gerado pelo banco para a pessoa
-        id_pessoa = result_pessoa.scalar()
-
-        # 2. Inserir dados específicos na tabela PACIENTE
-        query_paciente = text("""
-            INSERT INTO paciente (id_pessoa, numero_convenio, grupo_sanguineo)
-            VALUES (:id_pessoa, :numero_convenio, :grupo_sanguineo);
-        """)
-        
-        db.execute(query_paciente, {
-            "id_pessoa": id_pessoa,
-            "numero_convenio": paciente.num_convenio,
-            "grupo_sanguineo": paciente.grupo_sanguineo
-        })
-
-        # 3. Inserir alergias se houver
-        if paciente.alergias:
-            allergies = [a.strip() for a in paciente.alergias.split(",") if a.strip()]
-            for allergy in allergies:
-                db.execute(text("""
-                    INSERT INTO alergia (alergia, id_pessoa)
-                    VALUES (:alergia, :id_pessoa);
-                """), {
-                    "alergia": allergy,
-                    "id_pessoa": id_pessoa
-                })
-
-        # Confirma as inserções no banco
-        db.commit()
-
-        # Retorna o paciente recém criado
-        return {
-            "id_pessoa": id_pessoa,
-            "nome": paciente.nome,
-            "CPF": paciente.CPF,
-            "data_nascimento": paciente.data_nascimento,
-            "is_flamengo": paciente.is_flamengo,
-            "telefone": paciente.telefone,
-            "endereco": paciente.endereco,
-            "num_convenio": paciente.num_convenio,
-            "alergias": paciente.alergias,
-            "grupo_sanguineo": paciente.grupo_sanguineo
-        }
-
-    except Exception as e:
-        db.rollback()  # Se qualquer um falhar, desfaz tudo
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Erro ao cadastrar paciente. Detalhes: {str(e)}"
-        )
+router_pacientes = APIRouter(prefix="/pacientes", tags=["Pacientes"])
+router_preceptores = APIRouter(prefix="/preceptores", tags=["Preceptores"])
+router_residentes = APIRouter(prefix="/residentes", tags=["Residentes"])
 
 
-@router.get("/pacientes/", response_model=list[PacienteRead])
+# ---------------------------------------------------------------------------
+# Pacientes
+# ---------------------------------------------------------------------------
+
+
+def _buscar_paciente(db: Session, id_pessoa: int) -> Paciente:
+    paciente = db.get(
+        Paciente,
+        id_pessoa,
+        options=[selectinload(Paciente.pessoa), selectinload(Paciente.alergias)],
+    )
+    if paciente is None:
+        raise nao_encontrado("Paciente não encontrado.")
+    return paciente
+
+
+@router_pacientes.post("/", response_model=PacienteRead, status_code=status.HTTP_201_CREATED)
+def criar_paciente(dados: PacienteCreate, db: Session = Depends(get_orm_db)):
+    pessoa = Pessoa(
+        nome=dados.nome,
+        CPF=dados.CPF,
+        data_nascimento=dados.data_nascimento,
+        is_flamengo=dados.is_flamengo,
+        telefone=dados.telefone,
+        endereco=dados.endereco,
+    )
+    pessoa.paciente = Paciente(
+        numero_convenio=dados.num_convenio,
+        grupo_sanguineo=dados.grupo_sanguineo,
+    )
+    aplicar_alergias(pessoa.paciente, dados.alergias)
+
+    db.add(pessoa)
+    confirmar(db)
+    return dados_do_paciente(pessoa.paciente)
+
+
+@router_pacientes.get("/", response_model=list[PacienteRead])
 def listar_pacientes(
     nome: str | None = None,
     cpf: str | None = None,
     grupo_sanguineo: str | None = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_orm_db),
 ):
-    """
-    Lista os Pacientes. Aceita filtros opcionais de consulta:
-    nome (busca parcial), cpf (busca parcial) e grupo_sanguineo (exato).
-    """
-    sql = """
-        SELECT pe.id_pessoa, pe.nome, pe.CPF AS "CPF", pe.data_nascimento,
-               pe.is_flamengo, pe.telefone, pe.endereco,
-               pa.numero_convenio AS num_convenio,
-               (SELECT string_agg(al.alergia, ', ') FROM alergia al WHERE al.id_pessoa = pa.id_pessoa) AS alergias,
-               pa.grupo_sanguineo
-        FROM paciente pa
-        INNER JOIN pessoa pe ON pa.id_pessoa = pe.id_pessoa
-    """
-    condicoes, params = [], {}
+    stmt = (
+        select(Paciente)
+        .join(Paciente.pessoa)
+        .options(contains_eager(Paciente.pessoa), selectinload(Paciente.alergias))
+    )
     if nome:
-        condicoes.append("pe.nome ILIKE :nome")
-        params["nome"] = f"%{nome}%"
+        stmt = stmt.where(Pessoa.nome.ilike(f"%{nome}%"))
     if cpf:
-        condicoes.append("pe.CPF LIKE :cpf")
-        params["cpf"] = f"%{cpf}%"
+        stmt = stmt.where(Pessoa.CPF.like(f"%{cpf}%"))
     if grupo_sanguineo:
-        condicoes.append("pa.grupo_sanguineo = :grupo_sanguineo")
-        params["grupo_sanguineo"] = grupo_sanguineo
-    if condicoes:
-        sql += " WHERE " + " AND ".join(condicoes)
-    sql += " ORDER BY pe.nome;"
+        stmt = stmt.where(Paciente.grupo_sanguineo == grupo_sanguineo)
+    stmt = stmt.order_by(Pessoa.nome)
 
-    result = db.execute(text(sql), params)
-
-    # Converte os resultados para dicionários compatíveis com o PacienteRead
-    return [dict(row._mapping) for row in result]
+    return [dados_do_paciente(p) for p in db.execute(stmt).unique().scalars()]
 
 
-@router.get("/pacientes/{id_pessoa}", response_model=PacienteRead)
-def buscar_paciente(id_pessoa: int, db: Session = Depends(get_db)):
-    query = text("""
-        SELECT pe.id_pessoa, pe.nome, pe.CPF AS "CPF", pe.data_nascimento, 
-               pe.is_flamengo, pe.telefone, pe.endereco,
-               pa.numero_convenio AS num_convenio, 
-               (SELECT string_agg(al.alergia, ', ') FROM alergia al WHERE al.id_pessoa = pa.id_pessoa) AS alergias, 
-               pa.grupo_sanguineo
-        FROM paciente pa
-        INNER JOIN pessoa pe ON pa.id_pessoa = pe.id_pessoa
-        WHERE pa.id_pessoa = :id_pessoa;
-    """)
-    result = db.execute(query, {"id_pessoa": id_pessoa}).first()
-    
-    if not result:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, 
-            detail="Paciente não encontrado."
-        )
-        
-    return dict(result._mapping)
+@router_pacientes.get("/{id_pessoa}", response_model=PacienteRead)
+def buscar_paciente(id_pessoa: int, db: Session = Depends(get_orm_db)):
+    return dados_do_paciente(_buscar_paciente(db, id_pessoa))
 
 
-@router.put("/pacientes/{id_pessoa}", response_model=PacienteRead)
-def atualizar_paciente(id_pessoa: int, paciente: PacienteCreate, db: Session = Depends(get_db)):
-    """
-    Atualiza um Paciente. Atualiza a tabela 'pessoa' e depois 'paciente'.
-    """
-    # Verifica primeiro se o paciente existe
-    verificacao = db.execute(text("SELECT 1 FROM paciente WHERE id_pessoa = :id"), {"id": id_pessoa}).first()
-    if not verificacao:
-        raise HTTPException(status_code=404, detail="Paciente não encontrado.")
+@router_pacientes.put("/{id_pessoa}", response_model=PacienteRead)
+def atualizar_paciente(
+    id_pessoa: int, dados: PacienteCreate, db: Session = Depends(get_orm_db)
+):
+    paciente = _buscar_paciente(db, id_pessoa)
+    pessoa = paciente.pessoa
 
-    try:
-        # 1. Atualiza dados na tabela PESSOA
-        query_pessoa = text("""
-            UPDATE pessoa 
-            SET nome = :nome, CPF = :cpf, data_nascimento = :data_nascimento, 
-                is_flamengo = :is_flamengo, telefone = :telefone, endereco = :endereco
-            WHERE id_pessoa = :id_pessoa;
-        """)
-        db.execute(query_pessoa, {
-            "id_pessoa": id_pessoa,
-            "nome": paciente.nome,
-            "cpf": paciente.CPF,
-            "data_nascimento": paciente.data_nascimento,
-            "is_flamengo": paciente.is_flamengo,
-            "telefone": paciente.telefone,
-            "endereco": paciente.endereco
-        })
+    pessoa.nome = dados.nome
+    pessoa.CPF = dados.CPF
+    pessoa.data_nascimento = dados.data_nascimento
+    pessoa.is_flamengo = dados.is_flamengo
+    pessoa.telefone = dados.telefone
+    pessoa.endereco = dados.endereco
 
-        # 2. Atualiza dados na tabela PACIENTE
-        query_paciente = text("""
-            UPDATE paciente 
-            SET numero_convenio = :numero_convenio, grupo_sanguineo = :grupo_sanguineo
-            WHERE id_pessoa = :id_pessoa;
-        """)
-        db.execute(query_paciente, {
-            "id_pessoa": id_pessoa,
-            "numero_convenio": paciente.num_convenio,
-            "grupo_sanguineo": paciente.grupo_sanguineo
-        })
+    paciente.numero_convenio = dados.num_convenio
+    paciente.grupo_sanguineo = dados.grupo_sanguineo
+    aplicar_alergias(paciente, dados.alergias)
 
-        # 3. Atualiza alergias na tabela ALERGIA
-        db.execute(text("DELETE FROM alergia WHERE id_pessoa = :id_pessoa;"), {"id_pessoa": id_pessoa})
-        if paciente.alergias:
-            allergies = [a.strip() for a in paciente.alergias.split(",") if a.strip()]
-            for allergy in allergies:
-                db.execute(text("""
-                    INSERT INTO alergia (alergia, id_pessoa)
-                    VALUES (:alergia, :id_pessoa);
-                """), {
-                    "alergia": allergy,
-                    "id_pessoa": id_pessoa
-                })
-
-        db.commit()
-
-        return {
-            "id_pessoa": id_pessoa,
-            "nome": paciente.nome,
-            "CPF": paciente.CPF,
-            "data_nascimento": paciente.data_nascimento,
-            "is_flamengo": paciente.is_flamengo,
-            "telefone": paciente.telefone,
-            "endereco": paciente.endereco,
-            "num_convenio": paciente.num_convenio,
-            "alergias": paciente.alergias,
-            "grupo_sanguineo": paciente.grupo_sanguineo
-        }
-
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Erro ao atualizar paciente: {str(e)}"
-        )
+    confirmar(db)
+    return dados_do_paciente(paciente)
 
 
-@router.delete("/pacientes/{id_pessoa}", status_code=status.HTTP_204_NO_CONTENT)
-def deletar_paciente(id_pessoa: int, db: Session = Depends(get_db)):
-    """
-    Remove um Paciente.
-    No banco, é preciso remover primeiro da tabela filha (paciente) e depois da tabela pai (pessoa).
-    """
-    verificacao = db.execute(text("SELECT 1 FROM paciente WHERE id_pessoa = :id"), {"id": id_pessoa}).first()
-    if not verificacao:
-        raise HTTPException(status_code=404, detail="Paciente não encontrado.")
-
-    try:
-        # 1. Deletar da tabela filha PACIENTE
-        db.execute(text("DELETE FROM paciente WHERE id_pessoa = :id_pessoa;"), {"id_pessoa": id_pessoa})
-        
-        # 2. Deletar da tabela pai PESSOA
-        db.execute(text("DELETE FROM pessoa WHERE id_pessoa = :id_pessoa;"), {"id_pessoa": id_pessoa})
-
-        db.commit()
-        return None
-
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Erro ao deletar paciente: {str(e)}"
-        )
+@router_pacientes.delete("/{id_pessoa}", status_code=status.HTTP_204_NO_CONTENT)
+def deletar_paciente(id_pessoa: int, db: Session = Depends(get_orm_db)):
+    paciente = _buscar_paciente(db, id_pessoa)
+    pessoa = paciente.pessoa
+    db.delete(paciente)
+    remover_pessoa_se_orfa(db, pessoa)
+    confirmar(db)
+    return None
 
 
-# ==============================================================================
-# 🩺 SEÇÃO: PRECEPTORES (Herança de 3 Níveis: Pessoa -> Profissional -> Preceptor)
-# ==============================================================================
-
-@router.post("/preceptores/", response_model=PreceptorRead, status_code=status.HTTP_201_CREATED)
-def criar_preceptor(preceptor: PreceptorCreate, db: Session = Depends(get_db)):
-    """
-    Exemplo de herança com 3 tabelas no banco de dados físico.
-    Insere em PESSOA -> pega ID -> insere em PROFISSIONAL -> insere em PRECEPTOR.
-    """
-    try:
-        # 1. Inserir em PESSOA
-        query_pessoa = text("""
-            INSERT INTO pessoa (nome, CPF, data_nascimento, is_flamengo, telefone, endereco)
-            VALUES (:nome, :cpf, :data_nascimento, :is_flamengo, :telefone, :endereco)
-            RETURNING id_pessoa;
-        """)
-        id_pessoa = db.execute(query_pessoa, {
-            "nome": preceptor.nome,
-            "cpf": preceptor.CPF,
-            "data_nascimento": preceptor.data_nascimento,
-            "is_flamengo": preceptor.is_flamengo,
-            "telefone": preceptor.telefone,
-            "endereco": preceptor.endereco
-        }).scalar()
-
-        # 2. Inserir em PROFISSIONAL usando o id_pessoa
-        query_profissional = text("""
-            INSERT INTO profissional (id_pessoa, CRM, data_admissao, especialidade)
-            VALUES (:id_pessoa, :crm, :data_admissao, :especialidade);
-        """)
-        db.execute(query_profissional, {
-            "id_pessoa": id_pessoa,
-            "crm": preceptor.CRM,
-            "data_admissao": preceptor.data_admissao,
-            "especialidade": preceptor.especialidade
-        })
-
-        # 3. Inserir em PRECEPTOR usando o mesmo id_pessoa
-        query_preceptor = text("""
-            INSERT INTO preceptor (id_profissional, titulacao)
-            VALUES (:id_pessoa, :titulacao);
-        """)
-        db.execute(query_preceptor, {
-            "id_pessoa": id_pessoa,
-            "titulacao": preceptor.titulacao
-        })
-
-        db.commit()
-
-        # Retorna o objeto completo mesclando as três tabelas
-        return {
-            "id_pessoa": id_pessoa,
-            "nome": preceptor.nome,
-            "CPF": preceptor.CPF,
-            "data_nascimento": preceptor.data_nascimento,
-            "is_flamengo": preceptor.is_flamengo,
-            "telefone": preceptor.telefone,
-            "endereco": preceptor.endereco,
-            "CRM": preceptor.CRM,
-            "data_admissao": preceptor.data_admissao,
-            "especialidade": preceptor.especialidade,
-            "titulacao": preceptor.titulacao
-        }
-
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Erro ao cadastrar preceptor: {str(e)}"
-        )
+@router_pacientes.get("/internados", response_model=list[PacienteInternado])
+def pacientes_internados(db: Session = Depends(get_orm_db)):
+    """vw_pacientes_internados: quem está internado agora."""
+    return [dict(linha._mapping) for linha in db.execute(text("SELECT * FROM vw_pacientes_internados"))]
 
 
-@router.get("/preceptores/", response_model=list[PreceptorRead])
+@router_pacientes.get("/ultimo-atendimento", response_model=list[UltimoAtendimento])
+def ultimo_atendimento_por_paciente(db: Session = Depends(get_orm_db)):
+    """Último atendimento de cada paciente, com a lista de procedimentos."""
+    return consultas.ultimo_atendimento_por_paciente(db)
+
+
+# ---------------------------------------------------------------------------
+# Preceptores
+# ---------------------------------------------------------------------------
+
+
+def _buscar_preceptor(db: Session, id_pessoa: int) -> Preceptor:
+    preceptor = db.get(
+        Preceptor,
+        id_pessoa,
+        options=[selectinload(Preceptor.profissional).selectinload(Profissional.pessoa)],
+    )
+    if preceptor is None:
+        raise nao_encontrado("Preceptor não encontrado.")
+    return preceptor
+
+
+def _dados_do_preceptor(preceptor: Preceptor) -> dict:
+    return {
+        **dados_do_profissional(preceptor.profissional),
+        "titulacao": preceptor.titulacao,
+    }
+
+
+@router_preceptores.post("/", response_model=PreceptorRead, status_code=status.HTTP_201_CREATED)
+def criar_preceptor(dados: PreceptorCreate, db: Session = Depends(get_orm_db)):
+    pessoa = Pessoa(
+        nome=dados.nome,
+        CPF=dados.CPF,
+        data_nascimento=dados.data_nascimento,
+        is_flamengo=dados.is_flamengo,
+        telefone=dados.telefone,
+        endereco=dados.endereco,
+    )
+    pessoa.profissional = Profissional(
+        CRM=dados.CRM,
+        data_admissao=dados.data_admissao,
+        especialidade=dados.especialidade,
+    )
+    pessoa.profissional.preceptor = Preceptor(titulacao=dados.titulacao)
+
+    db.add(pessoa)
+    confirmar(db)
+    return _dados_do_preceptor(pessoa.profissional.preceptor)
+
+
+@router_preceptores.get("/", response_model=list[PreceptorRead])
 def listar_preceptores(
     nome: str | None = None,
     cpf: str | None = None,
     especialidade: str | None = None,
-    db: Session = Depends(get_db),
+    titulacao: str | None = None,
+    db: Session = Depends(get_orm_db),
 ):
-    """
-    Retorna os Preceptores fazendo JOIN entre as 3 tabelas.
-    Aceita filtros opcionais: nome, cpf e especialidade (busca parcial).
-    """
-    sql = """
-        SELECT pe.id_pessoa, pe.nome, pe.CPF AS "CPF", pe.data_nascimento,
-               pe.is_flamengo, pe.telefone, pe.endereco,
-               pr.CRM AS "CRM", pr.data_admissao, pr.especialidade,
-               pt.titulacao
-        FROM preceptor pt
-        INNER JOIN profissional pr ON pt.id_profissional = pr.id_pessoa
-        INNER JOIN pessoa pe ON pr.id_pessoa = pe.id_pessoa
-    """
-    condicoes, params = [], {}
-    if nome:
-        condicoes.append("pe.nome ILIKE :nome")
-        params["nome"] = f"%{nome}%"
-    if cpf:
-        condicoes.append("pe.CPF LIKE :cpf")
-        params["cpf"] = f"%{cpf}%"
-    if especialidade:
-        condicoes.append("pr.especialidade ILIKE :especialidade")
-        params["especialidade"] = f"%{especialidade}%"
-    if condicoes:
-        sql += " WHERE " + " AND ".join(condicoes)
-    sql += " ORDER BY pe.nome;"
-
-    result = db.execute(text(sql), params)
-    return [dict(row._mapping) for row in result]
-
-
-# ==============================================================================
-# 🎓 SEÇÃO: RESIDENTES (Herança de 3 Níveis: Pessoa -> Profissional -> Residente)
-# ==============================================================================
-
-@router.post("/residentes/", response_model=ResidenteRead, status_code=status.HTTP_201_CREATED)
-def criar_residente(residente: ResidenteCreate, db: Session = Depends(get_db)):
-    """
-    Cadastra um novo Residente no sistema usando SQL Puro.
-    Insere em PESSOA -> pega ID -> insere em PROFISSIONAL -> insere em RESIDENTE.
-    """
-    try:
-        # 1. Inserir em PESSOA
-        query_pessoa = text("""
-            INSERT INTO pessoa (nome, CPF, data_nascimento, is_flamengo, telefone, endereco)
-            VALUES (:nome, :cpf, :data_nascimento, :is_flamengo, :telefone, :endereco)
-            RETURNING id_pessoa;
-        """)
-        id_pessoa = db.execute(query_pessoa, {
-            "nome": residente.nome,
-            "cpf": residente.CPF,
-            "data_nascimento": residente.data_nascimento,
-            "is_flamengo": residente.is_flamengo,
-            "telefone": residente.telefone,
-            "endereco": residente.endereco
-        }).scalar()
-
-        # 2. Inserir em PROFISSIONAL usando o id_pessoa
-        query_profissional = text("""
-            INSERT INTO profissional (id_pessoa, CRM, data_admissao, especialidade)
-            VALUES (:id_pessoa, :crm, :data_admissao, :especialidade);
-        """)
-        db.execute(query_profissional, {
-            "id_pessoa": id_pessoa,
-            "crm": residente.CRM,
-            "data_admissao": residente.data_admissao,
-            "especialidade": residente.especialidade
-        })
-
-        # 3. Inserir em RESIDENTE usando o mesmo id_pessoa
-        query_residente = text("""
-            INSERT INTO residente (id_profissional, ano_residencia)
-            VALUES (:id_pessoa, :ano_residencia);
-        """)
-        db.execute(query_residente, {
-            "id_pessoa": id_pessoa,
-            "ano_residencia": residente.ano_residencia
-        })
-
-        db.commit()
-
-        return {
-            "id_pessoa": id_pessoa,
-            "nome": residente.nome,
-            "CPF": residente.CPF,
-            "data_nascimento": residente.data_nascimento,
-            "is_flamengo": residente.is_flamengo,
-            "telefone": residente.telefone,
-            "endereco": residente.endereco,
-            "CRM": residente.CRM,
-            "data_admissao": residente.data_admissao,
-            "especialidade": residente.especialidade,
-            "ano_residencia": residente.ano_residencia
-        }
-
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Erro ao cadastrar residente: {str(e)}"
+    stmt = (
+        select(Preceptor)
+        .join(Preceptor.profissional)
+        .join(Profissional.pessoa)
+        .options(
+            contains_eager(Preceptor.profissional).contains_eager(Profissional.pessoa)
         )
+    )
+    if nome:
+        stmt = stmt.where(Pessoa.nome.ilike(f"%{nome}%"))
+    if cpf:
+        stmt = stmt.where(Pessoa.CPF.like(f"%{cpf}%"))
+    if especialidade:
+        stmt = stmt.where(Profissional.especialidade.ilike(f"%{especialidade}%"))
+    if titulacao:
+        stmt = stmt.where(Preceptor.titulacao.ilike(f"%{titulacao}%"))
+    stmt = stmt.order_by(Pessoa.nome)
+
+    return [_dados_do_preceptor(p) for p in db.execute(stmt).unique().scalars()]
 
 
-@router.get("/residentes/", response_model=list[ResidenteRead])
+@router_preceptores.get("/{id_pessoa}", response_model=PreceptorRead)
+def buscar_preceptor(id_pessoa: int, db: Session = Depends(get_orm_db)):
+    return _dados_do_preceptor(_buscar_preceptor(db, id_pessoa))
+
+
+@router_preceptores.put("/{id_pessoa}", response_model=PreceptorRead)
+def atualizar_preceptor(
+    id_pessoa: int, dados: PreceptorCreate, db: Session = Depends(get_orm_db)
+):
+    preceptor = _buscar_preceptor(db, id_pessoa)
+    profissional = preceptor.profissional
+    pessoa = profissional.pessoa
+
+    pessoa.nome = dados.nome
+    pessoa.CPF = dados.CPF
+    pessoa.data_nascimento = dados.data_nascimento
+    pessoa.is_flamengo = dados.is_flamengo
+    pessoa.telefone = dados.telefone
+    pessoa.endereco = dados.endereco
+
+    profissional.CRM = dados.CRM
+    profissional.data_admissao = dados.data_admissao
+    profissional.especialidade = dados.especialidade
+    preceptor.titulacao = dados.titulacao
+
+    confirmar(db)
+    return _dados_do_preceptor(preceptor)
+
+
+@router_preceptores.delete("/{id_pessoa}", status_code=status.HTTP_204_NO_CONTENT)
+def deletar_preceptor(id_pessoa: int, db: Session = Depends(get_orm_db)):
+    preceptor = _buscar_preceptor(db, id_pessoa)
+    pessoa = preceptor.profissional.pessoa
+    db.delete(preceptor.profissional)
+    remover_pessoa_se_orfa(db, pessoa)
+    confirmar(db)
+    return None
+
+
+@router_preceptores.get("/supervisionados-flamenguistas", response_model=list[PreceptorDeFlamenguista])
+def preceptores_flamenguistas(db: Session = Depends(get_orm_db)):
+    """Preceptores que supervisionaram atendimentos a pacientes flamenguistas."""
+    return consultas.preceptores_de_pacientes_flamenguistas(db)
+
+
+# ---------------------------------------------------------------------------
+# Residentes
+# ---------------------------------------------------------------------------
+
+
+def _buscar_residente(db: Session, id_pessoa: int) -> Residente:
+    residente = db.get(
+        Residente,
+        id_pessoa,
+        options=[selectinload(Residente.profissional).selectinload(Profissional.pessoa)],
+    )
+    if residente is None:
+        raise nao_encontrado("Residente não encontrado.")
+    return residente
+
+
+def _dados_do_residente(residente: Residente) -> dict:
+    return {
+        **dados_do_profissional(residente.profissional),
+        "ano_residencia": residente.ano_residencia,
+    }
+
+
+@router_residentes.post("/", response_model=ResidenteRead, status_code=status.HTTP_201_CREATED)
+def criar_residente(dados: ResidenteCreate, db: Session = Depends(get_orm_db)):
+    pessoa = Pessoa(
+        nome=dados.nome,
+        CPF=dados.CPF,
+        data_nascimento=dados.data_nascimento,
+        is_flamengo=dados.is_flamengo,
+        telefone=dados.telefone,
+        endereco=dados.endereco,
+    )
+    pessoa.profissional = Profissional(
+        CRM=dados.CRM,
+        data_admissao=dados.data_admissao,
+        especialidade=dados.especialidade,
+    )
+    pessoa.profissional.residente = Residente(ano_residencia=dados.ano_residencia)
+
+    db.add(pessoa)
+    confirmar(db)
+    return _dados_do_residente(pessoa.profissional.residente)
+
+
+@router_residentes.get("/", response_model=list[ResidenteRead])
 def listar_residentes(
     nome: str | None = None,
     cpf: str | None = None,
     especialidade: str | None = None,
     ano_residencia: str | None = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_orm_db),
 ):
-    """
-    Retorna os Residentes fazendo JOIN entre as 3 tabelas.
-    Aceita filtros opcionais: nome, cpf, especialidade (parcial) e ano_residencia (exato).
-    """
-    sql = """
-        SELECT pe.id_pessoa, pe.nome, pe.CPF AS "CPF", pe.data_nascimento,
-               pe.is_flamengo, pe.telefone, pe.endereco,
-               pr.CRM AS "CRM", pr.data_admissao, pr.especialidade,
-               rs.ano_residencia
-        FROM residente rs
-        INNER JOIN profissional pr ON rs.id_profissional = pr.id_pessoa
-        INNER JOIN pessoa pe ON pr.id_pessoa = pe.id_pessoa
-    """
-    condicoes, params = [], {}
+    stmt = (
+        select(Residente)
+        .join(Residente.profissional)
+        .join(Profissional.pessoa)
+        .options(
+            contains_eager(Residente.profissional).contains_eager(Profissional.pessoa)
+        )
+    )
     if nome:
-        condicoes.append("pe.nome ILIKE :nome")
-        params["nome"] = f"%{nome}%"
+        stmt = stmt.where(Pessoa.nome.ilike(f"%{nome}%"))
     if cpf:
-        condicoes.append("pe.CPF LIKE :cpf")
-        params["cpf"] = f"%{cpf}%"
+        stmt = stmt.where(Pessoa.CPF.like(f"%{cpf}%"))
     if especialidade:
-        condicoes.append("pr.especialidade ILIKE :especialidade")
-        params["especialidade"] = f"%{especialidade}%"
+        stmt = stmt.where(Profissional.especialidade.ilike(f"%{especialidade}%"))
     if ano_residencia:
-        condicoes.append("rs.ano_residencia = :ano_residencia")
-        params["ano_residencia"] = ano_residencia
-    if condicoes:
-        sql += " WHERE " + " AND ".join(condicoes)
-    sql += " ORDER BY pe.nome;"
+        stmt = stmt.where(Residente.ano_residencia == ano_residencia)
+    stmt = stmt.order_by(Pessoa.nome)
 
-    result = db.execute(text(sql), params)
-    return [dict(row._mapping) for row in result]
+    return [_dados_do_residente(r) for r in db.execute(stmt).unique().scalars()]
 
 
-@router.get("/residentes/{id_pessoa}", response_model=ResidenteRead)
-def buscar_residente(id_pessoa: int, db: Session = Depends(get_db)):
-    """
-    Busca um Residente específico por ID.
-    """
-    query = text("""
-        SELECT pe.id_pessoa, pe.nome, pe.CPF AS "CPF", pe.data_nascimento, 
-               pe.is_flamengo, pe.telefone, pe.endereco,
-               pr.CRM AS "CRM", pr.data_admissao, pr.especialidade,
-               rs.ano_residencia
-        FROM residente rs
-        INNER JOIN profissional pr ON rs.id_profissional = pr.id_pessoa
-        INNER JOIN pessoa pe ON pr.id_pessoa = pe.id_pessoa
-        WHERE rs.id_profissional = :id_pessoa;
-    """)
-    result = db.execute(query, {"id_pessoa": id_pessoa}).first()
-    
-    if not result:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, 
-            detail="Residente não encontrado."
-        )
-        
-    return dict(result._mapping)
+@router_residentes.get("/{id_pessoa}", response_model=ResidenteRead)
+def buscar_residente(id_pessoa: int, db: Session = Depends(get_orm_db)):
+    return _dados_do_residente(_buscar_residente(db, id_pessoa))
 
 
-@router.put("/residentes/{id_pessoa}", response_model=ResidenteRead)
-def atualizar_residente(id_pessoa: int, residente: ResidenteCreate, db: Session = Depends(get_db)):
-    """
-    Atualiza um Residente por ID.
-    """
-    # Verifica primeiro se existe
-    verificacao = db.execute(text("SELECT 1 FROM residente WHERE id_profissional = :id"), {"id": id_pessoa}).first()
-    if not verificacao:
-        raise HTTPException(status_code=404, detail="Residente não encontrado.")
+@router_residentes.put("/{id_pessoa}", response_model=ResidenteRead)
+def atualizar_residente(
+    id_pessoa: int, dados: ResidenteCreate, db: Session = Depends(get_orm_db)
+):
+    residente = _buscar_residente(db, id_pessoa)
+    profissional = residente.profissional
+    pessoa = profissional.pessoa
 
-    try:
-        # 1. Atualizar PESSOA
-        query_pessoa = text("""
-            UPDATE pessoa 
-            SET nome = :nome, CPF = :cpf, data_nascimento = :data_nascimento, 
-                is_flamengo = :is_flamengo, telefone = :telefone, endereco = :endereco
-            WHERE id_pessoa = :id_pessoa;
-        """)
-        db.execute(query_pessoa, {
-            "id_pessoa": id_pessoa,
-            "nome": residente.nome,
-            "cpf": residente.CPF,
-            "data_nascimento": residente.data_nascimento,
-            "is_flamengo": residente.is_flamengo,
-            "telefone": residente.telefone,
-            "endereco": residente.endereco
-        })
+    pessoa.nome = dados.nome
+    pessoa.CPF = dados.CPF
+    pessoa.data_nascimento = dados.data_nascimento
+    pessoa.is_flamengo = dados.is_flamengo
+    pessoa.telefone = dados.telefone
+    pessoa.endereco = dados.endereco
 
-        # 2. Atualizar PROFISSIONAL
-        query_profissional = text("""
-            UPDATE profissional
-            SET CRM = :crm, data_admissao = :data_admissao, especialidade = :especialidade
-            WHERE id_pessoa = :id_pessoa;
-        """)
-        db.execute(query_profissional, {
-            "id_pessoa": id_pessoa,
-            "crm": residente.CRM,
-            "data_admissao": residente.data_admissao,
-            "especialidade": residente.especialidade
-        })
+    profissional.CRM = dados.CRM
+    profissional.data_admissao = dados.data_admissao
+    profissional.especialidade = dados.especialidade
+    residente.ano_residencia = dados.ano_residencia
 
-        # 3. Atualizar RESIDENTE
-        query_residente = text("""
-            UPDATE residente
-            SET ano_residencia = :ano_residencia
-            WHERE id_profissional = :id_pessoa;
-        """)
-        db.execute(query_residente, {
-            "id_pessoa": id_pessoa,
-            "ano_residencia": residente.ano_residencia
-        })
-
-        db.commit()
-
-        return {
-            "id_pessoa": id_pessoa,
-            "nome": residente.nome,
-            "CPF": residente.CPF,
-            "data_nascimento": residente.data_nascimento,
-            "is_flamengo": residente.is_flamengo,
-            "telefone": residente.telefone,
-            "endereco": residente.endereco,
-            "CRM": residente.CRM,
-            "data_admissao": residente.data_admissao,
-            "especialidade": residente.especialidade,
-            "ano_residencia": residente.ano_residencia
-        }
-
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Erro ao atualizar residente: {str(e)}"
-        )
+    confirmar(db)
+    return _dados_do_residente(residente)
 
 
-@router.delete("/residentes/{id_pessoa}", status_code=status.HTTP_204_NO_CONTENT)
-def deletar_residente(id_pessoa: int, db: Session = Depends(get_db)):
-    """
-    Remove um Residente por ID.
-    """
-    verificacao = db.execute(text("SELECT 1 FROM residente WHERE id_profissional = :id"), {"id": id_pessoa}).first()
-    if not verificacao:
-        raise HTTPException(status_code=404, detail="Residente não encontrado.")
+@router_residentes.delete("/{id_pessoa}", status_code=status.HTTP_204_NO_CONTENT)
+def deletar_residente(id_pessoa: int, db: Session = Depends(get_orm_db)):
+    residente = _buscar_residente(db, id_pessoa)
+    pessoa = residente.profissional.pessoa
+    db.delete(residente.profissional)
+    remover_pessoa_se_orfa(db, pessoa)
+    confirmar(db)
+    return None
 
-    try:
-        # 1. Deletar residente
-        db.execute(text("DELETE FROM residente WHERE id_profissional = :id_pessoa;"), {"id_pessoa": id_pessoa})
-        # 2. Deletar profissional
-        db.execute(text("DELETE FROM profissional WHERE id_pessoa = :id_pessoa;"), {"id_pessoa": id_pessoa})
-        # 3. Deletar pessoa
-        db.execute(text("DELETE FROM pessoa WHERE id_pessoa = :id_pessoa;"), {"id_pessoa": id_pessoa})
 
-        db.commit()
-        return None
+@router_residentes.get("/sem-supervisor-doutor", response_model=list[ResidenteSemSupervisor])
+def residentes_sem_supervisor(db: Session = Depends(get_orm_db)):
+    """vw_residentes_sem_supervisor: plantões cujo preceptor não é doutor."""
+    return [dict(linha._mapping) for linha in db.execute(text("SELECT * FROM vw_residentes_sem_supervisor"))]
 
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Erro ao deletar residente: {str(e)}"
-        )
+
+@router_residentes.get("/percentual-alto-risco", response_model=list[PercentualAltoRisco])
+def percentual_alto_risco(db: Session = Depends(get_orm_db)):
+    """Proporção de procedimentos de risco ALTO por residente."""
+    return consultas.percentual_alto_risco_por_residente(db)

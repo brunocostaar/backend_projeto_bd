@@ -6,7 +6,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from orm.modelos import Alergia, Paciente, Pessoa
+from modelos import Alergia, Paciente, Pessoa
 
 # Erros que o banco devolve e o significado em HTTP. O PostgreSQL entrega o
 # SQLSTATE em orig.pgcode; traduzir aqui evita despejar a mensagem crua do

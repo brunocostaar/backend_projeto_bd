@@ -1,245 +1,148 @@
+"""Escalas com ORM (Etapa 2).
+
+Inclui reajuste de escala, antes em /etapa2/procedures/reajustar-escala.
+"""
+
+from __future__ import annotations
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
-from sqlalchemy import text
-from database import get_db
-from schemas.escala import EscalaCreate, EscalaRead
+from sqlalchemy.orm.exc import StaleDataError
+
+from modelos import Escala, Preceptor, Residente, Unidade
+from database import get_orm_db
+from routers.comum import confirmar, erro_do_banco, nao_encontrado
+from schemas.etapa2 import (
+    EscalaOrmCreate,
+    EscalaOrmRead,
+    EscalaReajustada,
+    ReajustarEscala,
+)
 
 router = APIRouter(prefix="/escalas", tags=["Escalas"])
 
-@router.post("/", response_model=EscalaRead, status_code=status.HTTP_201_CREATED)
-def criar_escala(escala: EscalaCreate, db: Session = Depends(get_db)):
-    # 1. Validações manuais de integridade das FKs
-    unidade_existe = db.execute(text("SELECT 1 FROM unidade WHERE id_unidade = :id"), {"id": escala.id_unidade}).first()
-    if not unidade_existe:
-        raise HTTPException(status_code=400, detail="Unidade informada não existe.")
 
-    residente_existe = db.execute(text("SELECT 1 FROM residente WHERE id_profissional = :id"), {"id": escala.id_residente}).first()
-    if not residente_existe:
-        raise HTTPException(status_code=400, detail="Residente informado não existe.")
-
-    preceptor_existe = db.execute(text("SELECT 1 FROM preceptor WHERE id_profissional = :id"), {"id": escala.id_preceptor}).first()
-    if not preceptor_existe:
-        raise HTTPException(status_code=400, detail="Preceptor informado não existe.")
-
-    # 2. Verificação manual da Constraint UNIQUE para evitar erro feio do banco no console
-    escala_conflito = db.execute(text("""
-        SELECT 1 FROM escala 
-        WHERE id_unidade = :id_unidade 
-          AND dia_semana = :dia_semana 
-          AND turno = :turno 
-          AND id_residente = :id_residente;
-    """), {
-        "id_unidade": escala.id_unidade,
-        "dia_semana": escala.dia_semana,
-        "turno": escala.turno,
-        "id_residente": escala.id_residente
-    }).first()
-    
-    if escala_conflito:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Conflito de Escala: O residente já está escalado nesta unidade, dia e turno."
-        )
-
-    try:
-        query = text("""
-            INSERT INTO escala (id_unidade, dia_semana, turno, id_residente, id_preceptor)
-            VALUES (:id_unidade, :dia_semana, :turno, :id_residente, :id_preceptor)
-            RETURNING id_escala;
-        """)
-        
-        result = db.execute(query, {
-            "id_unidade": escala.id_unidade,
-            "dia_semana": escala.dia_semana,
-            "turno": escala.turno,
-            "id_residente": escala.id_residente,
-            "id_preceptor": escala.id_preceptor
-        })
-        
-        id_escala = result.scalar()
-        db.commit()
-
-        return {
-            "id_escala": id_escala,
-            "id_unidade": escala.id_unidade,
-            "dia_semana": escala.dia_semana,
-            "turno": escala.turno,
-            "id_residente": escala.id_residente,
-            "id_preceptor": escala.id_preceptor
-        }
-
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Erro ao cadastrar escala: {str(e)}"
-        )
+def _validar_referencias(db: Session, dados: EscalaOrmCreate) -> None:
+    if db.get(Unidade, dados.id_unidade) is None:
+        raise nao_encontrado(f"Unidade {dados.id_unidade} não existe.")
+    if db.get(Residente, dados.id_residente) is None:
+        raise nao_encontrado(f"Residente {dados.id_residente} não existe.")
+    if db.get(Preceptor, dados.id_preceptor) is None:
+        raise nao_encontrado(f"Preceptor {dados.id_preceptor} não existe.")
 
 
-@router.get("/", response_model=list[EscalaRead])
+def _buscar(db: Session, id_escala: int) -> Escala:
+    escala = db.get(Escala, id_escala)
+    if escala is None:
+        raise nao_encontrado("Escala não encontrada.")
+    return escala
+
+
+@router.post("/", response_model=EscalaOrmRead, status_code=status.HTTP_201_CREATED)
+def criar_escala(dados: EscalaOrmCreate, db: Session = Depends(get_orm_db)):
+    _validar_referencias(db, dados)
+    escala = Escala(**dados.model_dump())
+    db.add(escala)
+    confirmar(db)
+    return escala
+
+
+@router.get("/", response_model=list[EscalaOrmRead])
 def listar_escalas(
     id_unidade: int | None = None,
     id_residente: int | None = None,
     id_preceptor: int | None = None,
     dia_semana: str | None = None,
     turno: str | None = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_orm_db),
 ):
-    """
-    Lista as escalas. Aceita filtros opcionais: id_unidade, id_residente,
-    id_preceptor, dia_semana e turno.
-    """
-    sql = """
-        SELECT id_escala, id_unidade, dia_semana, turno, id_residente, id_preceptor
-        FROM escala
-    """
-    condicoes, params = [], {}
+    stmt = select(Escala)
     if id_unidade is not None:
-        condicoes.append("id_unidade = :id_unidade")
-        params["id_unidade"] = id_unidade
+        stmt = stmt.where(Escala.id_unidade == id_unidade)
     if id_residente is not None:
-        condicoes.append("id_residente = :id_residente")
-        params["id_residente"] = id_residente
+        stmt = stmt.where(Escala.id_residente == id_residente)
     if id_preceptor is not None:
-        condicoes.append("id_preceptor = :id_preceptor")
-        params["id_preceptor"] = id_preceptor
+        stmt = stmt.where(Escala.id_preceptor == id_preceptor)
     if dia_semana:
-        condicoes.append("dia_semana = :dia_semana")
-        params["dia_semana"] = dia_semana
+        stmt = stmt.where(Escala.dia_semana == dia_semana)
     if turno:
-        condicoes.append("turno = :turno")
-        params["turno"] = turno
-    if condicoes:
-        sql += " WHERE " + " AND ".join(condicoes)
-    sql += " ORDER BY id_unidade, dia_semana, turno;"
-
-    result = db.execute(text(sql), params)
-    return [dict(row._mapping) for row in result]
+        stmt = stmt.where(Escala.turno == turno)
+    stmt = stmt.order_by(Escala.id_unidade, Escala.dia_semana, Escala.turno)
+    return list(db.execute(stmt).scalars())
 
 
-@router.get("/{id_escala}", response_model=EscalaRead)
-def buscar_escala(id_escala: int, db: Session = Depends(get_db)):
-    query = text("""
-        SELECT id_escala, id_unidade, dia_semana, turno, id_residente, id_preceptor 
-        FROM escala 
-        WHERE id_escala = :id_escala;
-    """)
-    result = db.execute(query, {"id_escala": id_escala}).first()
-    
-    if not result:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Escala não encontrada."
-        )
-    return dict(result._mapping)
+@router.get("/{id_escala}", response_model=EscalaOrmRead)
+def buscar_escala(id_escala: int, db: Session = Depends(get_orm_db)):
+    return _buscar(db, id_escala)
 
 
-@router.put("/{id_escala}", response_model=EscalaRead)
-def atualizar_escala(id_escala: int, escala: EscalaCreate, db: Session = Depends(get_db)):
-    verificacao = db.execute(
-        text("SELECT 1 FROM escala WHERE id_escala = :id;"), 
-        {"id": id_escala}
-    ).first()
-    
-    if not verificacao:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Escala não encontrada."
-        )
-
-    # Validando se as novas FKs existem
-    unidade_existe = db.execute(text("SELECT 1 FROM unidade WHERE id_unidade = :id"), {"id": escala.id_unidade}).first()
-    if not unidade_existe:
-        raise HTTPException(status_code=400, detail="Unidade informada não existe.")
-
-    residente_existe = db.execute(text("SELECT 1 FROM residente WHERE id_profissional = :id"), {"id": escala.id_residente}).first()
-    if not residente_existe:
-        raise HTTPException(status_code=400, detail="Residente informado não existe.")
-
-    preceptor_existe = db.execute(text("SELECT 1 FROM preceptor WHERE id_profissional = :id"), {"id": escala.id_preceptor}).first()
-    if not preceptor_existe:
-        raise HTTPException(status_code=400, detail="Preceptor informado não existe.")
-
-    # Verificando se a nova configuração de escala não gera conflito com outra escala existente (excluindo ela mesma)
-    escala_conflito = db.execute(text("""
-        SELECT 1 FROM escala 
-        WHERE id_unidade = :id_unidade 
-          AND dia_semana = :dia_semana 
-          AND turno = :turno 
-          AND id_residente = :id_residente
-          AND id_escala <> :id_escala;
-    """), {
-        "id_unidade": escala.id_unidade,
-        "dia_semana": escala.dia_semana,
-        "turno": escala.turno,
-        "id_residente": escala.id_residente,
-        "id_escala": id_escala
-    }).first()
-    
-    if escala_conflito:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Conflito de Escala: A nova configuração gera duplicidade para o residente."
-        )
-
+@router.put("/{id_escala}", response_model=EscalaOrmRead)
+def atualizar_escala(
+    id_escala: int, dados: EscalaOrmCreate, db: Session = Depends(get_orm_db)
+):
+    escala = _buscar(db, id_escala)
+    _validar_referencias(db, dados)
+    for campo, valor in dados.model_dump().items():
+        setattr(escala, campo, valor)
     try:
-        query = text("""
-            UPDATE escala 
-            SET id_unidade = :id_unidade, 
-                dia_semana = :dia_semana, 
-                turno = :turno, 
-                id_residente = :id_residente, 
-                id_preceptor = :id_preceptor
-            WHERE id_escala = :id_escala;
-        """)
-        
-        db.execute(query, {
-            "id_escala": id_escala,
-            "id_unidade": escala.id_unidade,
-            "dia_semana": escala.dia_semana,
-            "turno": escala.turno,
-            "id_residente": escala.id_residente,
-            "id_preceptor": escala.id_preceptor
-        })
-        db.commit()
-
-        return {
-            "id_escala": id_escala,
-            "id_unidade": escala.id_unidade,
-            "dia_semana": escala.dia_semana,
-            "turno": escala.turno,
-            "id_residente": escala.id_residente,
-            "id_preceptor": escala.id_preceptor
-        }
-    except Exception as e:
+        confirmar(db)
+    except StaleDataError as erro:
         db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Erro ao atualizar escala: {str(e)}"
-        )
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Esta escala foi alterada por outra operação depois que você a "
+                "carregou. Recarregue e tente de novo."
+            ),
+        ) from erro
+    return escala
 
 
 @router.delete("/{id_escala}", status_code=status.HTTP_204_NO_CONTENT)
-def deletar_escala(id_escala: int, db: Session = Depends(get_db)):
-    verificacao = db.execute(
-        text("SELECT 1 FROM escala WHERE id_escala = :id;"), 
-        {"id": id_escala}
-    ).first()
-    
-    if not verificacao:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Escala não encontrada."
-        )
+def deletar_escala(id_escala: int, db: Session = Depends(get_orm_db)):
+    db.delete(_buscar(db, id_escala))
+    confirmar(db)
+    return None
 
-    try:
-        query = text("DELETE FROM escala WHERE id_escala = :id_escala;")
-        db.execute(query, {"id_escala": id_escala})
-        db.commit()
-        return None
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Erro ao deletar escala: {str(e)}"
+
+# ---------------------------------------------------------------------------
+# Reajuste de escala (antes em /etapa2/procedures/reajustar-escala)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/reajustar", response_model=EscalaReajustada)
+def reajustar_escala(dados: ReajustarEscala, db: Session = Depends(get_orm_db)):
+    comando = text(
+        """
+        CALL sp_reajustar_escala(
+            :id_residente, :dia_origem, :turno_origem,
+            :dia_destino, :turno_destino, NULL
         )
+        """
+    )
+    try:
+        resultado = db.execute(comando, dados.model_dump())
+        movidas = 0
+        if resultado.returns_rows:
+            linha = resultado.fetchone()
+            if linha is not None and linha[0] is not None:
+                movidas = int(linha[0])
+        db.commit()
+    except DBAPIError as erro:
+        db.rollback()
+        raise erro_do_banco(erro) from erro
+
+    if movidas == 0:
+        mensagem = (
+            f"O residente {dados.id_residente} não tem plantão em "
+            f"{dados.dia_origem} {dados.turno_origem}. Nada foi alterado."
+        )
+    else:
+        quantos = "1 plantão movido" if movidas == 1 else f"{movidas} plantões movidos"
+        mensagem = (
+            f"{quantos} de {dados.dia_origem} {dados.turno_origem} "
+            f"para {dados.dia_destino} {dados.turno_destino}."
+        )
+    return {"escalas_movidas": movidas, "mensagem": mensagem}

@@ -1,12 +1,4 @@
-"""Internações (Etapa 2).
-
-Entidade nova, sem equivalente na Etapa 1. Ela existe porque a
-vw_pacientes_internados precisa de algum lugar de onde tirar quem está internado.
-
-Regra que o banco garante: um paciente não pode ter duas internações abertas ao
-mesmo tempo. Quem impede é o índice parcial uq_internacao_aberta, criado em
-05_etapa2_estrutura.sql, que só vale para as linhas com data_hora_saida nula.
-"""
+"""Internações (Etapa 2)."""
 
 from __future__ import annotations
 
@@ -16,12 +8,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from orm.modelos import Internacao, Paciente, Unidade
-from orm.sessao import get_orm_db
-from routers_orm.comum import confirmar, nao_encontrado
+from modelos import Internacao, Paciente, Unidade
+from database import get_orm_db
+from routers.comum import confirmar, nao_encontrado
 from schemas.internacao import InternacaoAlta, InternacaoCreate, InternacaoRead
 
-router = APIRouter(prefix="/orm/internacoes", tags=["ORM - Internações"])
+router = APIRouter(prefix="/internacoes", tags=["Internações"])
 
 
 def _buscar(db: Session, id_internacao: int) -> Internacao:
@@ -40,8 +32,6 @@ def internar(dados: InternacaoCreate, db: Session = Depends(get_orm_db)):
 
     internacao = Internacao(**dados.model_dump())
     db.add(internacao)
-    # O índice parcial recusa a segunda internação aberta; comum.confirmar
-    # transforma a violação de unicidade em 409.
     confirmar(db)
     return internacao
 
@@ -75,11 +65,6 @@ def dar_alta(
     dados: InternacaoAlta | None = None,
     db: Session = Depends(get_orm_db),
 ):
-    """Encerra a internação. Sem data no corpo, usa o instante da chamada.
-
-    Depois da alta o paciente sai da vw_pacientes_internados e pode ser internado
-    de novo, porque o índice parcial só olha as internações abertas.
-    """
     internacao = _buscar(db, id_internacao)
     if internacao.data_hora_saida is not None:
         raise HTTPException(

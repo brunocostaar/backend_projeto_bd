@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import sys
 
-from orm.concorrencia import simular
+from concorrencia import simular
 
 LARGURA = 78
 

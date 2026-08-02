@@ -36,8 +36,8 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
 
-from orm.modelos import Escala, Residente
-from orm.sessao import SessionORM
+from modelos import Escala, Residente
+from database import SessionORM
 
 # Combinação livre no seed: o residente 15 tem plantão no sábado à tarde e na
 # sexta à tarde, nunca no domingo.

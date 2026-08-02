@@ -1,221 +1,226 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from sqlalchemy import text
-from database import get_db
-from schemas.atendimento import AtendimentoCreate, AtendimentoRead, TempoMedioResidente
+"""Atendimentos com ORM (Etapa 2).
+
+Inclui estatísticas mensais, tempo médio de espera e registro atômico de
+atendimento com procedimentos, que antes estavam em /etapa2.
+"""
+
+from __future__ import annotations
+
+import json
+
+from fastapi import APIRouter, Depends, status
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.orm import Session, aliased
+
+from modelos import Atendimento, Paciente, Preceptor, Pessoa, Residente, Unidade
+from database import get_orm_db
+from routers.comum import confirmar, erro_do_banco, nao_encontrado
+from schemas.atendimento import TempoMedioResidente
+from schemas.etapa2 import (
+    AtendimentoOrmCreate,
+    AtendimentoOrmRead,
+    AtendimentoRegistrado,
+    EstatisticaMensal,
+    RegistrarAtendimentoCompleto,
+    TempoMedioEspera,
+)
 
 router = APIRouter(prefix="/atendimentos", tags=["Atendimentos"])
 
-@router.post("/", response_model=AtendimentoRead, status_code=status.HTTP_201_CREATED)
-def criar_atendimento(atendimento: AtendimentoCreate, db: Session = Depends(get_db)):
-    # 1. Validações manuais de integridade das FKs
-    paciente_existe = db.execute(text("SELECT 1 FROM paciente WHERE id_pessoa = :id"), {"id": atendimento.id_paciente}).first()
-    if not paciente_existe:
-        raise HTTPException(status_code=400, detail="Paciente informado não existe.")
 
-    residente_existe = db.execute(text("SELECT 1 FROM residente WHERE id_profissional = :id"), {"id": atendimento.id_residente}).first()
-    if not residente_existe:
-        raise HTTPException(status_code=400, detail="Residente informado não existe.")
-
-    preceptor_existe = db.execute(text("SELECT 1 FROM preceptor WHERE id_profissional = :id"), {"id": atendimento.id_preceptor}).first()
-    if not preceptor_existe:
-        raise HTTPException(status_code=400, detail="Preceptor informado não existe.")
-
-    try:
-        query = text("""
-            INSERT INTO atendimento (data_hora, duracao_minutos, id_paciente, id_residente, id_preceptor)
-            VALUES (:data_hora, :duracao_minutos, :id_paciente, :id_residente, :id_preceptor)
-            RETURNING id_atendimento;
-        """)
-        
-        result = db.execute(query, {
-            "data_hora": atendimento.data_hora,
-            "duracao_minutos": atendimento.duracao_minutos,
-            "id_paciente": atendimento.id_paciente,
-            "id_residente": atendimento.id_residente,
-            "id_preceptor": atendimento.id_preceptor
-        })
-        
-        id_atendimento = result.scalar()
-        db.commit()
-
-        return {
-            "id_atendimento": id_atendimento,
-            "data_hora": atendimento.data_hora,
-            "duracao_minutos": atendimento.duracao_minutos,
-            "id_paciente": atendimento.id_paciente,
-            "id_residente": atendimento.id_residente,
-            "id_preceptor": atendimento.id_preceptor
-        }
-
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Erro ao registrar atendimento: {str(e)}"
-        )
+def _validar_referencias(db: Session, dados: AtendimentoOrmCreate) -> None:
+    if db.get(Paciente, dados.id_paciente) is None:
+        raise nao_encontrado(f"Paciente {dados.id_paciente} não existe.")
+    if db.get(Residente, dados.id_residente) is None:
+        raise nao_encontrado(f"Residente {dados.id_residente} não existe.")
+    if db.get(Preceptor, dados.id_preceptor) is None:
+        raise nao_encontrado(f"Preceptor {dados.id_preceptor} não existe.")
+    if dados.id_unidade is not None and db.get(Unidade, dados.id_unidade) is None:
+        raise nao_encontrado(f"Unidade {dados.id_unidade} não existe.")
 
 
-@router.get("/", response_model=list[AtendimentoRead])
+def _buscar(db: Session, id_atendimento: int) -> Atendimento:
+    atendimento = db.get(Atendimento, id_atendimento)
+    if atendimento is None:
+        raise nao_encontrado("Atendimento não encontrado.")
+    return atendimento
+
+
+@router.post("/", response_model=AtendimentoOrmRead, status_code=status.HTTP_201_CREATED)
+def criar_atendimento(dados: AtendimentoOrmCreate, db: Session = Depends(get_orm_db)):
+    _validar_referencias(db, dados)
+    atendimento = Atendimento(**dados.model_dump())
+    db.add(atendimento)
+    confirmar(db)
+    return atendimento
+
+
+@router.get("/", response_model=list[AtendimentoOrmRead])
 def listar_atendimentos(
     id_paciente: int | None = None,
     id_residente: int | None = None,
     id_preceptor: int | None = None,
+    id_unidade: int | None = None,
     data: str | None = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_orm_db),
 ):
-    """
-    Lista os atendimentos. Aceita filtros opcionais: id_paciente, id_residente,
-    id_preceptor e data (dia exato, formato AAAA-MM-DD).
-    """
-    sql = """
-        SELECT id_atendimento, data_hora, duracao_minutos, id_paciente, id_residente, id_preceptor
-        FROM atendimento
-    """
-    condicoes, params = [], {}
+    stmt = select(Atendimento)
     if id_paciente is not None:
-        condicoes.append("id_paciente = :id_paciente")
-        params["id_paciente"] = id_paciente
+        stmt = stmt.where(Atendimento.id_paciente == id_paciente)
     if id_residente is not None:
-        condicoes.append("id_residente = :id_residente")
-        params["id_residente"] = id_residente
+        stmt = stmt.where(Atendimento.id_residente == id_residente)
     if id_preceptor is not None:
-        condicoes.append("id_preceptor = :id_preceptor")
-        params["id_preceptor"] = id_preceptor
+        stmt = stmt.where(Atendimento.id_preceptor == id_preceptor)
+    if id_unidade is not None:
+        stmt = stmt.where(Atendimento.id_unidade == id_unidade)
     if data:
-        condicoes.append("data_hora::date = :data")
-        params["data"] = data
-    if condicoes:
-        sql += " WHERE " + " AND ".join(condicoes)
-    sql += " ORDER BY data_hora DESC;"
-
-    result = db.execute(text(sql), params)
-    return [dict(row._mapping) for row in result]
+        stmt = stmt.where(func.date(Atendimento.data_hora) == data)
+    return list(db.execute(stmt.order_by(Atendimento.data_hora.desc())).scalars())
 
 
-# Atenção: rota fixa declarada ANTES de /{id_atendimento} para não colidir
-@router.get("/tempo-medio-por-residente", response_model=list[TempoMedioResidente])
-def tempo_medio_por_residente(db: Session = Depends(get_db)):
-    """
-    Calcula o tempo médio de duração dos atendimentos por residente
-    (AVG + GROUP BY). LEFT JOIN para incluir residente sem atendimento.
-    """
-    query = text("""
-        SELECT r.id_profissional AS id_residente,
-               pe.nome,
-               COUNT(a.id_atendimento) AS total_atendimentos,
-               ROUND(AVG(a.duracao_minutos), 1) AS tempo_medio_minutos
-        FROM residente r
-        INNER JOIN pessoa pe ON pe.id_pessoa = r.id_profissional
-        LEFT JOIN atendimento a ON a.id_residente = r.id_profissional
-        GROUP BY r.id_profissional, pe.nome
-        ORDER BY tempo_medio_minutos DESC NULLS LAST, pe.nome;
-    """)
-    result = db.execute(query)
-    return [dict(row._mapping) for row in result]
+@router.get("/{id_atendimento}", response_model=AtendimentoOrmRead)
+def buscar_atendimento(id_atendimento: int, db: Session = Depends(get_orm_db)):
+    return _buscar(db, id_atendimento)
 
 
-@router.get("/{id_atendimento}", response_model=AtendimentoRead)
-def buscar_atendimento(id_atendimento: int, db: Session = Depends(get_db)):
-    query = text("""
-        SELECT id_atendimento, data_hora, duracao_minutos, id_paciente, id_residente, id_preceptor 
-        FROM atendimento 
-        WHERE id_atendimento = :id_atendimento;
-    """)
-    result = db.execute(query, {"id_atendimento": id_atendimento}).first()
-    
-    if not result:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Atendimento não encontrado."
-        )
-    return dict(result._mapping)
-
-
-@router.put("/{id_atendimento}", response_model=AtendimentoRead)
-def atualizar_atendimento(id_atendimento: int, atendimento: AtendimentoCreate, db: Session = Depends(get_db)):
-    verificacao = db.execute(
-        text("SELECT 1 FROM atendimento WHERE id_atendimento = :id;"), 
-        {"id": id_atendimento}
-    ).first()
-    
-    if not verificacao:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Atendimento não encontrado."
-        )
-
-    # Validando se as novas FKs existem
-    paciente_existe = db.execute(text("SELECT 1 FROM paciente WHERE id_pessoa = :id"), {"id": atendimento.id_paciente}).first()
-    if not paciente_existe:
-        raise HTTPException(status_code=400, detail="Paciente informado não existe.")
-
-    residente_existe = db.execute(text("SELECT 1 FROM residente WHERE id_profissional = :id"), {"id": atendimento.id_residente}).first()
-    if not residente_existe:
-        raise HTTPException(status_code=400, detail="Residente informado não existe.")
-
-    preceptor_existe = db.execute(text("SELECT 1 FROM preceptor WHERE id_profissional = :id"), {"id": atendimento.id_preceptor}).first()
-    if not preceptor_existe:
-        raise HTTPException(status_code=400, detail="Preceptor informado não existe.")
-
-    try:
-        query = text("""
-            UPDATE atendimento 
-            SET data_hora = :data_hora, 
-                duracao_minutos = :duracao_minutos, 
-                id_paciente = :id_paciente, 
-                id_residente = :id_residente, 
-                id_preceptor = :id_preceptor
-            WHERE id_atendimento = :id_atendimento;
-        """)
-        
-        db.execute(query, {
-            "id_atendimento": id_atendimento,
-            "data_hora": atendimento.data_hora,
-            "duracao_minutos": atendimento.duracao_minutos,
-            "id_paciente": atendimento.id_paciente,
-            "id_residente": atendimento.id_residente,
-            "id_preceptor": atendimento.id_preceptor
-        })
-        db.commit()
-
-        return {
-            "id_atendimento": id_atendimento,
-            "data_hora": atendimento.data_hora,
-            "duracao_minutos": atendimento.duracao_minutos,
-            "id_paciente": atendimento.id_paciente,
-            "id_residente": atendimento.id_residente,
-            "id_preceptor": atendimento.id_preceptor
-        }
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Erro ao atualizar atendimento: {str(e)}"
-        )
+@router.put("/{id_atendimento}", response_model=AtendimentoOrmRead)
+def atualizar_atendimento(
+    id_atendimento: int,
+    dados: AtendimentoOrmCreate,
+    db: Session = Depends(get_orm_db),
+):
+    atendimento = _buscar(db, id_atendimento)
+    _validar_referencias(db, dados)
+    for campo, valor in dados.model_dump().items():
+        setattr(atendimento, campo, valor)
+    confirmar(db)
+    return atendimento
 
 
 @router.delete("/{id_atendimento}", status_code=status.HTTP_204_NO_CONTENT)
-def deletar_atendimento(id_atendimento: int, db: Session = Depends(get_db)):
-    verificacao = db.execute(
-        text("SELECT 1 FROM atendimento WHERE id_atendimento = :id;"), 
-        {"id": id_atendimento}
-    ).first()
-    
-    if not verificacao:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Atendimento não encontrado."
+def deletar_atendimento(id_atendimento: int, db: Session = Depends(get_orm_db)):
+    db.delete(_buscar(db, id_atendimento))
+    confirmar(db)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Rota fixa antes da rota com parâmetro
+# ---------------------------------------------------------------------------
+
+
+@router.get("/tempo-medio-por-residente", response_model=list[TempoMedioResidente])
+def tempo_medio_por_residente(db: Session = Depends(get_orm_db)):
+    pessoa = aliased(Pessoa, name="pessoa_residente")
+    media = func.round(func.avg(Atendimento.duracao_minutos), 1)
+
+    stmt = (
+        select(
+            Residente.id_profissional.label("id_residente"),
+            pessoa.nome,
+            func.count(Atendimento.id_atendimento).label("total_atendimentos"),
+            media.label("tempo_medio_minutos"),
         )
+        .select_from(Residente)
+        .join(pessoa, pessoa.id_pessoa == Residente.id_profissional)
+        .outerjoin(Atendimento, Atendimento.id_residente == Residente.id_profissional)
+        .group_by(Residente.id_profissional, pessoa.nome)
+        .order_by(media.desc().nullslast(), pessoa.nome)
+    )
+    return [dict(linha._mapping) for linha in db.execute(stmt)]
+
+
+# ---------------------------------------------------------------------------
+# Estatísticas mensais (antes em /etapa2/views/estatisticas-mensais)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/estatisticas-mensais", response_model=list[EstatisticaMensal])
+def estatisticas_mensais(db: Session = Depends(get_orm_db)):
+    return [
+        dict(linha._mapping)
+        for linha in db.execute(text("SELECT * FROM vw_estatisticas_atendimentos_mensal"))
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Tempo médio de espera (antes em /etapa2/procedures/tempo-medio-espera)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/tempo-medio-espera", response_model=list[TempoMedioEspera])
+def tempo_medio_espera(db: Session = Depends(get_orm_db)):
+    return [
+        dict(linha._mapping)
+        for linha in db.execute(text("SELECT * FROM sp_calcular_tempo_medio_espera()"))
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Atendimento completo (antes em /etapa2/procedures/registrar-atendimento-completo)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/completo", response_model=AtendimentoRegistrado)
+def registrar_atendimento_completo(
+    dados: RegistrarAtendimentoCompleto, db: Session = Depends(get_orm_db)
+):
+    procedimentos = [p.model_dump(mode="json") for p in dados.procedimentos]
+
+    comando = text(
+        """
+        CALL sp_registrar_atendimento_completo(
+            CAST(:data_hora AS TIMESTAMP),
+            :duracao_minutos,
+            :id_paciente,
+            :id_residente,
+            :id_preceptor,
+            :id_unidade,
+            CAST(:procedimentos AS JSONB),
+            NULL
+        )
+        """
+    )
 
     try:
-        query = text("DELETE FROM atendimento WHERE id_atendimento = :id_atendimento;")
-        db.execute(query, {"id_atendimento": id_atendimento})
-        db.commit()
-        return None
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Erro ao deletar atendimento: {str(e)}"
+        resultado = db.execute(
+            comando,
+            {
+                "data_hora": dados.data_hora.isoformat(),
+                "duracao_minutos": dados.duracao_minutos,
+                "id_paciente": dados.id_paciente,
+                "id_residente": dados.id_residente,
+                "id_preceptor": dados.id_preceptor,
+                "id_unidade": dados.id_unidade,
+                "procedimentos": json.dumps(procedimentos),
+            },
         )
+        id_atendimento = None
+        if resultado.returns_rows:
+            linha = resultado.fetchone()
+            if linha is not None:
+                id_atendimento = linha[0]
+        if id_atendimento is None:
+            id_atendimento = db.execute(
+                text(
+                    "SELECT id_atendimento FROM atendimento "
+                    "WHERE data_hora = CAST(:dh AS TIMESTAMP) "
+                    "ORDER BY id_atendimento DESC LIMIT 1"
+                ),
+                {"dh": dados.data_hora.isoformat()},
+            ).scalar()
+        db.commit()
+    except DBAPIError as erro:
+        db.rollback()
+        raise erro_do_banco(erro) from erro
+
+    total = len(procedimentos)
+    return {
+        "id_atendimento": id_atendimento,
+        "procedimentos_inseridos": total,
+        "mensagem": (
+            f"Atendimento {id_atendimento} gravado com {total} "
+            f"procedimento{'s' if total > 1 else ''}."
+        ),
+    }

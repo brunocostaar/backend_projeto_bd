@@ -26,7 +26,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Session, aliased
 
-from orm.modelos import (
+from modelos import (
     Atendimento,
     Escala,
     Paciente,
