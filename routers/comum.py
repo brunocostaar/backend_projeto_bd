@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import StaleDataError
 
 from modelos import Alergia, Paciente, Pessoa
 
@@ -48,6 +49,11 @@ def confirmar(db: Session) -> None:
     """Commit com tradução de erro e rollback garantido."""
     try:
         db.commit()
+    except StaleDataError:
+        # O chamador conhece o recurso que estava sendo alterado e converte
+        # esse conflito otimista em HTTP 409. Nao esconda o erro como 400.
+        db.rollback()
+        raise
     except IntegrityError as erro:
         db.rollback()
         raise erro_do_banco(erro) from erro

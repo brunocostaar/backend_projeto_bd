@@ -60,9 +60,9 @@ DECLARE
     v_id_proc  INTEGER;
     v_total    INTEGER;
 BEGIN
-    -- A lista precisa ser um array JSON com pelo menos um item. O DER exige
-    -- no mínimo um procedimento por atendimento, cardinalidade que nenhuma
-    -- constraint do esquema consegue expressar.
+    -- A lista precisa ser um array JSON com pelo menos um item. O constraint
+    -- trigger diferido de 07 também garante essa cardinalidade no COMMIT; esta
+    -- validação antecipada preserva uma mensagem clara para quem usa a rotina.
     IF p_procedimentos IS NULL OR jsonb_typeof(p_procedimentos) <> 'array' THEN
         RAISE EXCEPTION
             'p_procedimentos deve ser um array JSON, recebido: %',
@@ -207,12 +207,11 @@ $$;
 --
 -- Move os plantões de um residente de um dia/turno para outro, tudo ou nada.
 --
--- Duas regras somadas garantem que um residente tenha no máximo um plantão em
--- cada dia/turno: a UNIQUE(id_unidade, dia_semana, turno, id_residente) do
--- esquema da Etapa 1 e o trg_check_sobreposicao_escala da Etapa 2. Antes de
--- gravar, a rotina confere as duas para poder explicar o conflito; o trigger
--- continua sendo a última barreira, inclusive contra quem escreve na tabela
--- por fora daqui.
+-- A UNIQUE(id_residente, dia_semana, turno) é a barreira definitiva contra
+-- sobreposição. A rotina também bloqueia a linha do residente: chamadas
+-- concorrentes para a mesma pessoa ficam serializadas, de modo que a segunda
+-- relê a origem somente depois de a primeira confirmar sua mudança. Isso evita
+-- que duas chamadas anunciem que moveram a mesma escala (lost update).
 --
 -- Uso:
 --   CALL sp_reajustar_escala(14, 'sexta', 'manha', 'quinta', 'manha', NULL);
@@ -240,7 +239,15 @@ DECLARE
 BEGIN
     p_escalas_movidas := 0;
 
-    IF NOT EXISTS (SELECT 1 FROM Residente WHERE id_profissional = p_id_residente) THEN
+    -- O lock é deliberadamente feito antes da leitura das escalas. Bloquear a
+    -- linha de Residente, que sempre existe e é única por pessoa, também cobre
+    -- o caso em que ainda não há linha de Escala que pudesse ser bloqueada.
+    PERFORM 1
+      FROM Residente
+     WHERE id_profissional = p_id_residente
+       FOR UPDATE;
+
+    IF NOT FOUND THEN
         RAISE EXCEPTION 'Residente % não existe.', p_id_residente
             USING ERRCODE = 'foreign_key_violation';
     END IF;

@@ -1,7 +1,7 @@
 """Atendimentos com ORM (Etapa 2).
 
 Inclui estatísticas mensais, tempo médio de espera e registro atômico de
-atendimento com procedimentos, que antes estavam em /etapa2.
+atendimento com procedimentos.
 """
 
 from __future__ import annotations
@@ -79,32 +79,6 @@ def listar_atendimentos(
     return list(db.execute(stmt.order_by(Atendimento.data_hora.desc())).scalars())
 
 
-@router.get("/{id_atendimento}", response_model=AtendimentoOrmRead)
-def buscar_atendimento(id_atendimento: int, db: Session = Depends(get_orm_db)):
-    return _buscar(db, id_atendimento)
-
-
-@router.put("/{id_atendimento}", response_model=AtendimentoOrmRead)
-def atualizar_atendimento(
-    id_atendimento: int,
-    dados: AtendimentoOrmCreate,
-    db: Session = Depends(get_orm_db),
-):
-    atendimento = _buscar(db, id_atendimento)
-    _validar_referencias(db, dados)
-    for campo, valor in dados.model_dump().items():
-        setattr(atendimento, campo, valor)
-    confirmar(db)
-    return atendimento
-
-
-@router.delete("/{id_atendimento}", status_code=status.HTTP_204_NO_CONTENT)
-def deletar_atendimento(id_atendimento: int, db: Session = Depends(get_orm_db)):
-    db.delete(_buscar(db, id_atendimento))
-    confirmar(db)
-    return None
-
-
 # ---------------------------------------------------------------------------
 # Rota fixa antes da rota com parâmetro
 # ---------------------------------------------------------------------------
@@ -132,7 +106,7 @@ def tempo_medio_por_residente(db: Session = Depends(get_orm_db)):
 
 
 # ---------------------------------------------------------------------------
-# Estatísticas mensais (antes em /etapa2/views/estatisticas-mensais)
+# Estatísticas mensais
 # ---------------------------------------------------------------------------
 
 
@@ -145,7 +119,7 @@ def estatisticas_mensais(db: Session = Depends(get_orm_db)):
 
 
 # ---------------------------------------------------------------------------
-# Tempo médio de espera (antes em /etapa2/procedures/tempo-medio-espera)
+# Tempo médio de espera
 # ---------------------------------------------------------------------------
 
 
@@ -158,7 +132,7 @@ def tempo_medio_espera(db: Session = Depends(get_orm_db)):
 
 
 # ---------------------------------------------------------------------------
-# Atendimento completo (antes em /etapa2/procedures/registrar-atendimento-completo)
+# Atendimento completo
 # ---------------------------------------------------------------------------
 
 
@@ -224,3 +198,34 @@ def registrar_atendimento_completo(
             f"procedimento{'s' if total > 1 else ''}."
         ),
     }
+
+
+# As rotas com identificador ficam por ultimo. O Starlette resolve caminhos na
+# ordem de registro; desse modo nomes como "estatisticas-mensais" nunca sao
+# interpretados como o parametro inteiro id_atendimento.
+
+
+@router.get("/{id_atendimento}", response_model=AtendimentoOrmRead)
+def buscar_atendimento(id_atendimento: int, db: Session = Depends(get_orm_db)):
+    return _buscar(db, id_atendimento)
+
+
+@router.put("/{id_atendimento}", response_model=AtendimentoOrmRead)
+def atualizar_atendimento(
+    id_atendimento: int,
+    dados: AtendimentoOrmCreate,
+    db: Session = Depends(get_orm_db),
+):
+    atendimento = _buscar(db, id_atendimento)
+    _validar_referencias(db, dados)
+    for campo, valor in dados.model_dump().items():
+        setattr(atendimento, campo, valor)
+    confirmar(db)
+    return atendimento
+
+
+@router.delete("/{id_atendimento}", status_code=status.HTTP_204_NO_CONTENT)
+def deletar_atendimento(id_atendimento: int, db: Session = Depends(get_orm_db)):
+    db.delete(_buscar(db, id_atendimento))
+    confirmar(db)
+    return None

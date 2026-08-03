@@ -26,6 +26,12 @@
 
 \c hospital_universitario
 
+-- A migração é atômica: se dados legados impedirem uma nova regra (por
+-- exemplo, escalas duplicadas ou titulação fora do domínio), nenhuma alteração
+-- parcial fica aplicada. Os locks de DDL também protegem a carga inicial dos
+-- acumuladores contra escritas concorrentes durante a migração.
+BEGIN;
+
 
 -- ------------------------------------------------------------
 -- Colunas novas em tabelas existentes
@@ -44,11 +50,150 @@ ALTER TABLE Procedimento_Realizado
 ALTER TABLE Procedimento
     ADD COLUMN IF NOT EXISTS media_tempo_procedimento NUMERIC(7,2);
 
+-- A média materializada precisa ser atualizada sem reler linhas que outra
+-- transação ainda não confirmou. Estes dois acumuladores permitem ao trigger
+-- aplicar deltas atômicos (soma/quantidade) na própria linha de Procedimento.
+-- BIGINT evita estouro prematuro quando houver muitos registros históricos.
+ALTER TABLE Procedimento
+    ADD COLUMN IF NOT EXISTS soma_tempo_procedimento BIGINT NOT NULL DEFAULT 0;
+
+ALTER TABLE Procedimento
+    ADD COLUMN IF NOT EXISTS quantidade_tempos_procedimento BIGINT NOT NULL DEFAULT 0;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'chk_acumuladores_procedimento'
+           AND conrelid = 'procedimento'::regclass
+    ) THEN
+        ALTER TABLE Procedimento
+            ADD CONSTRAINT chk_acumuladores_procedimento
+            CHECK (
+                soma_tempo_procedimento >= 0
+                AND quantidade_tempos_procedimento >= 0
+            );
+    END IF;
+END;
+$$;
+
 -- Incrementada a cada UPDATE de escala. O SQLAlchemy usa esta coluna como
 -- version_id_col: se duas sessões carregam a mesma escala e as duas gravam,
 -- a segunda encontra a versão trocada e falha em vez de sobrescrever.
 ALTER TABLE Escala
     ADD COLUMN IF NOT EXISTS versao INTEGER NOT NULL DEFAULT 1;
+
+-- A UNIQUE original inclui id_unidade e, por isso, permite que duas
+-- transações escalem o mesmo residente no mesmo turno em unidades distintas.
+-- A chave abaixo representa diretamente a regra de negócio e é a barreira
+-- concorrente definitiva; o trigger de 07 continua existindo para produzir
+-- uma mensagem mais amigável quando o conflito já está visível.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_escala_residente_dia_turno
+    ON Escala(id_residente, dia_semana, turno);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+          FROM pg_constraint
+         WHERE conname = 'uq_escala_residente_dia_turno'
+           AND conrelid = 'escala'::regclass
+    ) THEN
+        ALTER TABLE Escala
+            ADD CONSTRAINT uq_escala_residente_dia_turno
+            UNIQUE USING INDEX uq_escala_residente_dia_turno;
+    END IF;
+END;
+$$;
+
+
+-- ------------------------------------------------------------
+-- Domínio de titulação
+--
+-- Valores textuais legados são reduzidos aos três valores canônicos antes
+-- de a restrição ser criada. O trigger de 07 faz a mesma normalização nas
+-- escritas futuras (por exemplo, "Doutorado em Cardiologia" vira "doutor").
+-- ------------------------------------------------------------
+
+UPDATE Preceptor
+   SET titulacao = CASE
+       WHEN lower(btrim(titulacao)) LIKE 'doutor%'  THEN 'doutor'
+       WHEN lower(btrim(titulacao)) LIKE 'mestr%'   THEN 'mestre'
+       WHEN lower(btrim(titulacao)) LIKE 'especial%' THEN 'especialista'
+       ELSE lower(btrim(titulacao))
+   END;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+          FROM pg_constraint
+         WHERE conname = 'chk_preceptor_titulacao'
+           AND conrelid = 'preceptor'::regclass
+    ) THEN
+        ALTER TABLE Preceptor
+            ADD CONSTRAINT chk_preceptor_titulacao
+            CHECK (titulacao IN ('doutor', 'mestre', 'especialista'));
+    END IF;
+END;
+$$;
+
+
+-- ------------------------------------------------------------
+-- Papel exclusivo do profissional
+--
+-- Consultar Preceptor a partir de um trigger de Residente (e vice-versa) não
+-- basta sob concorrência: duas transações podem não enxergar uma à outra.
+-- Esta tabela compartilhada transforma a exclusividade numa chave primária.
+-- Os triggers de 07 reservam/liberam o papel junto com a tabela especializada.
+-- ------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS Papel_Profissional(
+    id_profissional INTEGER PRIMARY KEY,
+    papel VARCHAR(10) NOT NULL,
+    CONSTRAINT chk_papel_profissional
+        CHECK (papel IN ('PRECEPTOR', 'RESIDENTE')),
+    CONSTRAINT papelEhProfissional FOREIGN KEY (id_profissional)
+        REFERENCES Profissional(id_pessoa)
+        ON DELETE CASCADE
+        ON UPDATE CASCADE
+);
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+          FROM Preceptor p
+          JOIN Residente r ON r.id_profissional = p.id_profissional
+    ) THEN
+        RAISE EXCEPTION
+            'Existem profissionais cadastrados simultaneamente como preceptor e residente; corrija os dados antes da migração.'
+            USING ERRCODE = 'check_violation';
+    END IF;
+END;
+$$;
+
+INSERT INTO Papel_Profissional (id_profissional, papel)
+SELECT id_profissional, 'PRECEPTOR'
+  FROM Preceptor
+ON CONFLICT (id_profissional) DO UPDATE
+    SET papel = EXCLUDED.papel;
+
+INSERT INTO Papel_Profissional (id_profissional, papel)
+SELECT id_profissional, 'RESIDENTE'
+  FROM Residente
+ON CONFLICT (id_profissional) DO UPDATE
+    SET papel = EXCLUDED.papel;
+
+DELETE FROM Papel_Profissional pp
+ WHERE NOT EXISTS (
+           SELECT 1 FROM Preceptor p
+            WHERE p.id_profissional = pp.id_profissional
+       )
+   AND NOT EXISTS (
+           SELECT 1 FROM Residente r
+            WHERE r.id_profissional = pp.id_profissional
+       );
 
 
 -- ------------------------------------------------------------
@@ -113,15 +258,26 @@ CREATE INDEX IF NOT EXISTS idx_auditoria_atendimento
 -- ------------------------------------------------------------
 -- Carga inicial da média de tempo
 --
--- O trigger da Etapa 2 mantém media_tempo_procedimento a partir de agora, mas
--- os procedimentos já gravados pelo seed da Etapa 1 ficariam com a coluna
--- vazia. Este UPDATE calcula o valor de partida.
+-- O trigger da Etapa 2 mantém os acumuladores e a média a partir de agora,
+-- mas os procedimentos já gravados pelo seed da Etapa 1 precisam de um estado
+-- inicial coerente. O UPDATE cobre também procedimentos sem medição, deixando
+-- soma/quantidade em zero e a média nula. Reexecutá-lo é seguro.
 -- ------------------------------------------------------------
 
 UPDATE Procedimento p
-   SET media_tempo_procedimento = m.media
-  FROM (SELECT id_procedimento, ROUND(AVG(tempo_real_minutos), 2) AS media
-          FROM Procedimento_Realizado
-         WHERE tempo_real_minutos IS NOT NULL
-         GROUP BY id_procedimento) m
+   SET soma_tempo_procedimento       = m.soma,
+       quantidade_tempos_procedimento = m.quantidade,
+       media_tempo_procedimento      = m.media
+  FROM (
+        SELECT p0.id_procedimento,
+               COALESCE(SUM(pr.tempo_real_minutos), 0)::BIGINT AS soma,
+               COUNT(pr.tempo_real_minutos)::BIGINT            AS quantidade,
+               ROUND(AVG(pr.tempo_real_minutos), 2)             AS media
+          FROM Procedimento p0
+          LEFT JOIN Procedimento_Realizado pr
+            ON pr.id_procedimento = p0.id_procedimento
+         GROUP BY p0.id_procedimento
+       ) m
  WHERE m.id_procedimento = p.id_procedimento;
+
+COMMIT;

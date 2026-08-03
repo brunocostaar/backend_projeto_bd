@@ -1,3 +1,7 @@
+# Banco descartável exclusivo da suíte pytest. A porta 5434 evita qualquer
+# contato acidental com o PostgreSQL normal do projeto, exposto em 5432.
+name: hospital_test_suite
+
 services:
   db:
     image: postgres:16-alpine
@@ -6,7 +10,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5434:5432"
+      - "127.0.0.1:5434:5432"
     volumes:
       - ./01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
       - ./02_seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
@@ -21,6 +25,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+      start_period: 5s
 
 volumes:
   pgdata_test:

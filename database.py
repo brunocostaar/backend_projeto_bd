@@ -1,9 +1,13 @@
+import os
 from collections.abc import Iterator
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-SQLALCHEMY_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/hospital_universitario"
+SQLALCHEMY_DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres:postgres@localhost:5432/hospital_universitario",
+)
 
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
 

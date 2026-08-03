@@ -1,6 +1,6 @@
 """Pacientes, preceptores e residentes com ORM (Etapa 2).
 
-Inclui views e consultas avançadas que antes estavam em /etapa2.
+Inclui views e consultas avançadas junto dos recursos correspondentes.
 """
 
 from __future__ import annotations
@@ -101,6 +101,21 @@ def listar_pacientes(
     return [dados_do_paciente(p) for p in db.execute(stmt).unique().scalars()]
 
 
+@router_pacientes.get("/internados", response_model=list[PacienteInternado])
+def pacientes_internados(db: Session = Depends(get_orm_db)):
+    """vw_pacientes_internados: quem está internado agora."""
+    return [dict(linha._mapping) for linha in db.execute(text("SELECT * FROM vw_pacientes_internados"))]
+
+
+@router_pacientes.get("/ultimo-atendimento", response_model=list[UltimoAtendimento])
+def ultimo_atendimento_por_paciente(db: Session = Depends(get_orm_db)):
+    """Último atendimento de cada paciente, com a lista de procedimentos."""
+    return consultas.ultimo_atendimento_por_paciente(db)
+
+
+# Caminhos com identificador ficam depois dos caminhos literais acima.
+
+
 @router_pacientes.get("/{id_pessoa}", response_model=PacienteRead)
 def buscar_paciente(id_pessoa: int, db: Session = Depends(get_orm_db)):
     return dados_do_paciente(_buscar_paciente(db, id_pessoa))
@@ -136,18 +151,6 @@ def deletar_paciente(id_pessoa: int, db: Session = Depends(get_orm_db)):
     remover_pessoa_se_orfa(db, pessoa)
     confirmar(db)
     return None
-
-
-@router_pacientes.get("/internados", response_model=list[PacienteInternado])
-def pacientes_internados(db: Session = Depends(get_orm_db)):
-    """vw_pacientes_internados: quem está internado agora."""
-    return [dict(linha._mapping) for linha in db.execute(text("SELECT * FROM vw_pacientes_internados"))]
-
-
-@router_pacientes.get("/ultimo-atendimento", response_model=list[UltimoAtendimento])
-def ultimo_atendimento_por_paciente(db: Session = Depends(get_orm_db)):
-    """Último atendimento de cada paciente, com a lista de procedimentos."""
-    return consultas.ultimo_atendimento_por_paciente(db)
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +227,12 @@ def listar_preceptores(
     return [_dados_do_preceptor(p) for p in db.execute(stmt).unique().scalars()]
 
 
+@router_preceptores.get("/supervisionados-flamenguistas", response_model=list[PreceptorDeFlamenguista])
+def preceptores_flamenguistas(db: Session = Depends(get_orm_db)):
+    """Preceptores que supervisionaram atendimentos a pacientes flamenguistas."""
+    return consultas.preceptores_de_pacientes_flamenguistas(db)
+
+
 @router_preceptores.get("/{id_pessoa}", response_model=PreceptorRead)
 def buscar_preceptor(id_pessoa: int, db: Session = Depends(get_orm_db)):
     return _dados_do_preceptor(_buscar_preceptor(db, id_pessoa))
@@ -261,12 +270,6 @@ def deletar_preceptor(id_pessoa: int, db: Session = Depends(get_orm_db)):
     remover_pessoa_se_orfa(db, pessoa)
     confirmar(db)
     return None
-
-
-@router_preceptores.get("/supervisionados-flamenguistas", response_model=list[PreceptorDeFlamenguista])
-def preceptores_flamenguistas(db: Session = Depends(get_orm_db)):
-    """Preceptores que supervisionaram atendimentos a pacientes flamenguistas."""
-    return consultas.preceptores_de_pacientes_flamenguistas(db)
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +346,18 @@ def listar_residentes(
     return [_dados_do_residente(r) for r in db.execute(stmt).unique().scalars()]
 
 
+@router_residentes.get("/sem-supervisor-doutor", response_model=list[ResidenteSemSupervisor])
+def residentes_sem_supervisor(db: Session = Depends(get_orm_db)):
+    """vw_residentes_sem_supervisor: plantões cujo preceptor não é doutor."""
+    return [dict(linha._mapping) for linha in db.execute(text("SELECT * FROM vw_residentes_sem_supervisor"))]
+
+
+@router_residentes.get("/percentual-alto-risco", response_model=list[PercentualAltoRisco])
+def percentual_alto_risco(db: Session = Depends(get_orm_db)):
+    """Proporção de procedimentos de risco ALTO por residente."""
+    return consultas.percentual_alto_risco_por_residente(db)
+
+
 @router_residentes.get("/{id_pessoa}", response_model=ResidenteRead)
 def buscar_residente(id_pessoa: int, db: Session = Depends(get_orm_db)):
     return _dados_do_residente(_buscar_residente(db, id_pessoa))
@@ -380,15 +395,3 @@ def deletar_residente(id_pessoa: int, db: Session = Depends(get_orm_db)):
     remover_pessoa_se_orfa(db, pessoa)
     confirmar(db)
     return None
-
-
-@router_residentes.get("/sem-supervisor-doutor", response_model=list[ResidenteSemSupervisor])
-def residentes_sem_supervisor(db: Session = Depends(get_orm_db)):
-    """vw_residentes_sem_supervisor: plantões cujo preceptor não é doutor."""
-    return [dict(linha._mapping) for linha in db.execute(text("SELECT * FROM vw_residentes_sem_supervisor"))]
-
-
-@router_residentes.get("/percentual-alto-risco", response_model=list[PercentualAltoRisco])
-def percentual_alto_risco(db: Session = Depends(get_orm_db)):
-    """Proporção de procedimentos de risco ALTO por residente."""
-    return consultas.percentual_alto_risco_por_residente(db)

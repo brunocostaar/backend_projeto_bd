@@ -288,7 +288,10 @@ class Escala(Base):
     __tablename__ = "escala"
     __table_args__ = (
         UniqueConstraint(
-            "id_unidade", "dia_semana", "turno", "id_residente", name="uq_escala"
+            "id_residente",
+            "dia_semana",
+            "turno",
+            name="uq_escala_residente_dia_turno",
         ),
     )
 

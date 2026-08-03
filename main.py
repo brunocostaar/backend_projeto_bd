@@ -4,6 +4,7 @@ from routers.analiticas import router as analiticas_router
 from routers.atendimento import router as atendimento_router
 from routers.auditoria import router as auditoria_router
 from routers.concorrencia import router as concorrencia_router
+from routers.consultas import router as consultas_router
 from routers.escala import router as escala_router
 from routers.internacao import router as internacao_router
 from routers.pessoa import (
@@ -33,6 +34,7 @@ app.include_router(internacao_router)
 app.include_router(analiticas_router)
 app.include_router(auditoria_router)
 app.include_router(concorrencia_router)
+app.include_router(consultas_router)
 
 
 @app.get("/")

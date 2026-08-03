@@ -66,8 +66,9 @@ SELECT ui.id_internacao,
 -- chave estrangeira. O LEFT JOIN e o teste de nulo ficam para o caso de a
 -- coluna se tornar opcional, e documentam que a situação foi considerada.
 --
--- A comparação usa lower() porque titulacao é texto livre: o seed grava
--- "doutor", mas nada impede "Doutor" vindo da API.
+-- Pelos scripts 05 e 07, titulacao é normalizada para o domínio canônico
+-- (doutor/mestre/especialista). Isso faz descrições como "Doutorado em
+-- Cardiologia" chegarem aqui como "doutor", sem falsos positivos na view.
 -- ============================================================
 
 DROP VIEW IF EXISTS vw_residentes_sem_supervisor;
@@ -93,7 +94,7 @@ SELECT e.id_escala,
   LEFT JOIN Preceptor pre    ON pre.id_profissional = e.id_preceptor
   LEFT JOIN Pessoa    pe_pre ON pe_pre.id_pessoa    = e.id_preceptor
  WHERE pre.id_profissional IS NULL
-    OR lower(pre.titulacao) <> 'doutor'
+    OR pre.titulacao IS DISTINCT FROM 'doutor'
  ORDER BY pe_res.nome, e.dia_semana, e.turno;
 
 

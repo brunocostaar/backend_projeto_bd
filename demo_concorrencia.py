@@ -8,7 +8,7 @@ Uso, com o banco no ar:
 
     python demo_concorrencia.py
 
-A mesma simulação está em POST /etapa2/concorrencia/simular e na aba
+A mesma simulação está em POST /concorrencia/simular e na aba
 Concorrência do frontend.
 """
 

@@ -24,6 +24,11 @@
 
 \c hospital_universitario
 
+-- O constraint trigger de 07 verifica no COMMIT que cada atendimento possui
+-- ao menos um procedimento. Toda a carga roda numa só transação para que os
+-- atendimentos e seus procedimentos sejam publicados de forma atômica.
+BEGIN;
+
 
 -- ============================================================
 -- 1. Unidade dos atendimentos da Etapa 1
@@ -197,3 +202,5 @@ INSERT INTO Escala (dia_semana, turno, id_preceptor, id_residente, id_unidade) V
 ('quinta', 'manha', 6,  12, 1),
 ('quinta', 'tarde', 8,  13, 3),
 ('sexta',  'tarde', 7,  15, 3);
+
+COMMIT;

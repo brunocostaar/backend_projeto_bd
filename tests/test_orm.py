@@ -44,29 +44,6 @@ from consultas import (
 )
 from concorrencia import simular
 
-import os
-
-if "TEST_DATABASE_URL" not in os.environ:
-    os.environ["TEST_DATABASE_URL"] = "postgresql://postgres:postgres@localhost:5432/hospital_universitario"
-
-from sqlalchemy.orm import sessionmaker  # noqa: E402
-
-_ENGINE_TEST = None
-
-
-def _patch_orm_concorrencia():
-    global _ENGINE_TEST
-    url = os.environ.get("TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/hospital_universitario")
-    if _ENGINE_TEST is None:
-        from sqlalchemy import create_engine
-        _ENGINE_TEST = create_engine(url, connect_args={"connect_timeout": 3})
-    import database as db_mod
-    import concorrencia as concorrencia_mod
-    nova = sessionmaker(bind=_ENGINE_TEST, autocommit=False, autoflush=False)
-    db_mod.SessionORM = nova
-    db_mod.engine = _ENGINE_TEST
-    concorrencia_mod.SessionORM = nova
-
 
 # ═══════════════════════════════════════════════════════════════════════
 # Item 4: ORM CRUD — Mapeamento, sessões, relacionamentos
@@ -529,9 +506,6 @@ class TestConsultasAvancadasEstrutura:
 
 class TestConcorrencia:
     """Simulação de duas transações disputando a mesma escala."""
-
-    def setup_method(self):
-        _patch_orm_concorrencia()
 
     def test_simulacao_retorna_tres_cenarios(self):
         resultado = simular()

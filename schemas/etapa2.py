@@ -243,7 +243,7 @@ class PacienteSemAltoRisco(BaseModel):
 #
 # As colunas acrescentadas em 05_etapa2_estrutura.sql ficam nestes schemas, e
 # não nos da Etapa 1. Assim a resposta de /atendimentos/ continua exatamente
-# como estava, e /orm/atendimentos/ mostra os campos novos.
+# como estava, enquanto o contrato atual de atendimentos mostra os campos novos.
 # ---------------------------------------------------------------------------
 
 
@@ -308,6 +308,17 @@ class EscalaOrmBase(BaseModel):
 
 class EscalaOrmCreate(EscalaOrmBase):
     pass
+
+
+class EscalaOrmUpdate(EscalaOrmBase):
+    """Atualiza uma escala somente se ela ainda estiver na versao lida.
+
+    ``versao`` faz parte do contrato de escrita, em vez de ser relida
+    silenciosamente pelo servidor. Assim um cliente desatualizado nao pode
+    sobrescrever a alteracao de outro cliente.
+    """
+
+    versao: int = Field(..., ge=1, examples=[1])
 
 
 class EscalaOrmRead(EscalaOrmBase):

@@ -1,7 +1,4 @@
-"""Escalas com ORM (Etapa 2).
-
-Inclui reajuste de escala, antes em /etapa2/procedures/reajustar-escala.
-"""
+"""Escalas com ORM, controle de versão e reajuste transacional."""
 
 from __future__ import annotations
 
@@ -15,8 +12,10 @@ from modelos import Escala, Preceptor, Residente, Unidade
 from database import get_orm_db
 from routers.comum import confirmar, erro_do_banco, nao_encontrado
 from schemas.etapa2 import (
+    EscalaOrmBase,
     EscalaOrmCreate,
     EscalaOrmRead,
+    EscalaOrmUpdate,
     EscalaReajustada,
     ReajustarEscala,
 )
@@ -24,7 +23,7 @@ from schemas.etapa2 import (
 router = APIRouter(prefix="/escalas", tags=["Escalas"])
 
 
-def _validar_referencias(db: Session, dados: EscalaOrmCreate) -> None:
+def _validar_referencias(db: Session, dados: EscalaOrmBase) -> None:
     if db.get(Unidade, dados.id_unidade) is None:
         raise nao_encontrado(f"Unidade {dados.id_unidade} não existe.")
     if db.get(Residente, dados.id_residente) is None:
@@ -73,18 +72,24 @@ def listar_escalas(
     return list(db.execute(stmt).scalars())
 
 
-@router.get("/{id_escala}", response_model=EscalaOrmRead)
 def buscar_escala(id_escala: int, db: Session = Depends(get_orm_db)):
     return _buscar(db, id_escala)
 
 
-@router.put("/{id_escala}", response_model=EscalaOrmRead)
 def atualizar_escala(
-    id_escala: int, dados: EscalaOrmCreate, db: Session = Depends(get_orm_db)
+    id_escala: int, dados: EscalaOrmUpdate, db: Session = Depends(get_orm_db)
 ):
     escala = _buscar(db, id_escala)
+    if escala.versao != dados.versao:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Versao desatualizada: o cliente enviou {dados.versao}, mas "
+                f"a escala esta na versao {escala.versao}. Recarregue e tente de novo."
+            ),
+        )
     _validar_referencias(db, dados)
-    for campo, valor in dados.model_dump().items():
+    for campo, valor in dados.model_dump(exclude={"versao"}).items():
         setattr(escala, campo, valor)
     try:
         confirmar(db)
@@ -100,7 +105,6 @@ def atualizar_escala(
     return escala
 
 
-@router.delete("/{id_escala}", status_code=status.HTTP_204_NO_CONTENT)
 def deletar_escala(id_escala: int, db: Session = Depends(get_orm_db)):
     db.delete(_buscar(db, id_escala))
     confirmar(db)
@@ -108,7 +112,7 @@ def deletar_escala(id_escala: int, db: Session = Depends(get_orm_db)):
 
 
 # ---------------------------------------------------------------------------
-# Reajuste de escala (antes em /etapa2/procedures/reajustar-escala)
+# Reajuste transacional de escala
 # ---------------------------------------------------------------------------
 
 
@@ -146,3 +150,25 @@ def reajustar_escala(dados: ReajustarEscala, db: Session = Depends(get_orm_db)):
             f"para {dados.dia_destino} {dados.turno_destino}."
         )
     return {"escalas_movidas": movidas, "mensagem": mensagem}
+
+
+# O Starlette resolve caminhos na ordem de registro. Registre os caminhos com
+# identificador somente depois de /reajustar.
+router.add_api_route(
+    "/{id_escala}",
+    buscar_escala,
+    methods=["GET"],
+    response_model=EscalaOrmRead,
+)
+router.add_api_route(
+    "/{id_escala}",
+    atualizar_escala,
+    methods=["PUT"],
+    response_model=EscalaOrmRead,
+)
+router.add_api_route(
+    "/{id_escala}",
+    deletar_escala,
+    methods=["DELETE"],
+    status_code=status.HTTP_204_NO_CONTENT,
+)

@@ -11,31 +11,112 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Generator
+from collections.abc import Callable, Generator
 
 import pytest
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session
+from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.orm import Session, sessionmaker
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-_URL = os.getenv("TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/hospital_universitario")
+_DEFAULT_TEST_DATABASE_URL = (
+    "postgresql://postgres:postgres@localhost:5434/hospital_universitario"
+)
+
+
+def _carregar_url_de_teste() -> str:
+    """Obtém e valida a conexão antes que qualquer fixture abra um socket.
+
+    A porta 5432 local pertence ao ambiente normal do projeto. Mesmo que alguém
+    copie essa URL para TEST_DATABASE_URL, a suíte para durante a carga do
+    conftest, antes de importar a aplicação ou executar uma consulta.
+    """
+
+    valor = os.getenv("TEST_DATABASE_URL") or _DEFAULT_TEST_DATABASE_URL
+    try:
+        url = make_url(valor)
+    except Exception as erro:
+        raise pytest.UsageError(f"TEST_DATABASE_URL inválida: {erro}") from erro
+
+    if not url.drivername.startswith("postgresql"):
+        raise pytest.UsageError(
+            "TEST_DATABASE_URL deve apontar para um PostgreSQL isolado de testes."
+        )
+
+    host = (url.host or "localhost").strip("[]").lower()
+    porta = url.port or 5432
+    hosts_locais = {"localhost", "127.0.0.1", "::1"}
+    if host not in hosts_locais or porta != 5434:
+        raise pytest.UsageError(
+            "Execução recusada: TEST_DATABASE_URL deve apontar exclusivamente "
+            "para o PostgreSQL descartável em localhost:5434. A porta 5432 e "
+            "hosts remotos/produção nunca são aceitos pela suíte."
+        )
+
+    return valor
+
+
+TEST_DATABASE_URL = _carregar_url_de_teste()
+# Mantém uma única fonte para fixtures, a aplicação e módulos auxiliares.
+# Isto ocorre antes da coleta importar main/database/concorrencia, portanto até
+# engines globais nascem apontando para o banco descartável.
+os.environ["TEST_DATABASE_URL"] = TEST_DATABASE_URL
+os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 _SKIP_REASON = (
-    f"Banco de testes indisponivel em {_URL}. "
-    "Suba com: docker compose up -d"
+    f"Banco de testes indisponivel em {TEST_DATABASE_URL}. "
+    "Suba com: docker compose -f docker-compose.test.yml up -d --wait"
 )
 
 
 @pytest.fixture(scope="session")
-def engine() -> Engine:
+def engine() -> Generator[Engine, None, None]:
     """Engine compartilhado por toda a sessão de testes."""
     try:
-        eng = create_engine(_URL, connect_args={"connect_timeout": 3})
+        eng = create_engine(
+            TEST_DATABASE_URL,
+            connect_args={"connect_timeout": 3},
+            pool_pre_ping=True,
+        )
         eng.connect().close()
-        return eng
-    except Exception:
-        pytest.skip(_SKIP_REASON)
+    except Exception as erro:
+        raise pytest.UsageError(_SKIP_REASON) from erro
+    try:
+        yield eng
+    finally:
+        eng.dispose()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def test_session_factory(engine: Engine):
+    """Vincula aplicação e simulação concorrente somente ao engine de teste."""
+
+    import concorrencia
+    import database
+
+    factory = sessionmaker(
+        bind=engine,
+        autocommit=False,
+        autoflush=False,
+        expire_on_commit=False,
+    )
+    anteriores = {
+        "engine": database.engine,
+        "SessionLocal": database.SessionLocal,
+        "SessionORM": database.SessionORM,
+        "concorrencia_SessionORM": concorrencia.SessionORM,
+    }
+    database.engine = engine
+    database.SessionLocal = factory
+    database.SessionORM = factory
+    concorrencia.SessionORM = factory
+    try:
+        yield factory
+    finally:
+        concorrencia.SessionORM = anteriores["concorrencia_SessionORM"]
+        database.SessionORM = anteriores["SessionORM"]
+        database.SessionLocal = anteriores["SessionLocal"]
+        database.engine = anteriores["engine"]
 
 
 @pytest.fixture
@@ -47,7 +128,12 @@ def db(engine: Engine) -> Generator[Session, None, None]:
     """
     connection = engine.connect()
     transacao = connection.begin()
-    sessao = Session(bind=connection, autoflush=False, autocommit=False)
+    sessao = Session(
+        bind=connection,
+        autoflush=False,
+        autocommit=False,
+        join_transaction_mode="create_savepoint",
+    )
     try:
         yield sessao
     finally:
@@ -58,7 +144,7 @@ def db(engine: Engine) -> Generator[Session, None, None]:
 
 
 @pytest.fixture
-def sp(db: Session) -> Generator[callable, None, None]:
+def sp(db: Session) -> Generator[Callable[..., object], None, None]:
     """Helper que executa CALL dentro de um savepoint.
 
     Quando o teste espera um erro (RAISE EXCEPTION da procedure), ele precisa
@@ -84,7 +170,7 @@ def sp(db: Session) -> Generator[callable, None, None]:
 
 
 @pytest.fixture
-def sql(db: Session) -> Generator[callable, None, None]:
+def sql(db: Session) -> Generator[Callable[..., object], None, None]:
     """Helper para executar SQL textual simples."""
 
     def executar(sql_str: str, **params):
@@ -94,6 +180,27 @@ def sql(db: Session) -> Generator[callable, None, None]:
         return None
 
     yield executar
+
+
+@pytest.fixture
+def client(db: Session):
+    """TestClient cuja injeção de sessão participa do rollback do teste."""
+
+    from fastapi.testclient import TestClient
+
+    import database
+    from main import app
+
+    def override_db():
+        yield db
+
+    app.dependency_overrides[database.get_db] = override_db
+    app.dependency_overrides[database.get_orm_db] = override_db
+    try:
+        with TestClient(app) as test_client:
+            yield test_client
+    finally:
+        app.dependency_overrides.clear()
 
 
 # Valores fixos que correspondem aos dados do seed (02 + 09).

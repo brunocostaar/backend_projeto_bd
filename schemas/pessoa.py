@@ -1,5 +1,33 @@
 from datetime import date
-from pydantic import BaseModel, ConfigDict, Field
+import unicodedata
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+def normalizar_titulacao(valor: str) -> str:
+    """Converte descricoes livres para o dominio usado pelo banco.
+
+    Exemplos aceitos incluem ``Doutorado em Cardiologia``, ``mestrado`` e
+    ``especializacao``. Persistir apenas os tres valores canonicos mantem as
+    views e os filtros independentes da forma digitada pelo cliente.
+    """
+
+    texto = " ".join(valor.strip().lower().split())
+    sem_acentos = "".join(
+        caractere
+        for caractere in unicodedata.normalize("NFKD", texto)
+        if not unicodedata.combining(caractere)
+    )
+
+    if sem_acentos == "phd" or sem_acentos.startswith(("doutor", "doutorado")):
+        return "doutor"
+    if sem_acentos.startswith(("mestre", "mestra", "mestrado")):
+        return "mestre"
+    if sem_acentos.startswith(("especialista", "especializacao")):
+        return "especialista"
+    raise ValueError(
+        "titulacao deve representar especialista, mestre ou doutor"
+    )
 
 # ==========================================
 # 1. ESQUEMAS DE PESSOA (Tabela Pai)
@@ -63,10 +91,24 @@ class ProfissionalRead(PessoaRead):
 # ==========================================
 
 class PreceptorCreate(ProfissionalCreate):
-    titulacao: str = Field(..., examples=["Doutorado em Cardiologia"])
+    titulacao: str = Field(
+        ...,
+        description=(
+            "Aceita variantes como 'Doutorado em Cardiologia', mas armazena "
+            "especialista, mestre ou doutor."
+        ),
+        examples=["Doutorado em Cardiologia"],
+    )
+
+    @field_validator("titulacao", mode="before")
+    @classmethod
+    def validar_titulacao(cls, valor: object) -> str:
+        if not isinstance(valor, str):
+            raise ValueError("titulacao deve ser texto")
+        return normalizar_titulacao(valor)
 
 class PreceptorRead(ProfissionalRead):
-    titulacao: str = Field(..., examples=["Doutorado em Cardiologia"])
+    titulacao: str = Field(..., examples=["doutor"])
 
 
 # ==========================================

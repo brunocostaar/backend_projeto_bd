@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Iterable
 from typing import Any, Callable
 
 from sqlalchemy import delete, select, text
@@ -74,21 +75,19 @@ def _preparar_sessao(db: Session) -> None:
     db.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'"))
 
 
-def _limpar() -> None:
-    """Remove o que os cenários criaram.
+def _limpar_ids(ids_escala: Iterable[int]) -> None:
+    """Remove exclusivamente as escalas criadas pela execução atual.
 
-    O filtro ignora o turno de propósito. O cenário otimista altera o turno da
-    escala antes desta limpeza rodar, então casar por turno deixaria a linha
-    para trás. O residente escolhido não tem nenhum plantão de domingo no seed,
-    então apagar o dia inteiro só atinge o que a simulação criou.
+    O identificador continua válido mesmo quando o cenário otimista altera o
+    turno. Nunca usamos residente, dia ou turno como critério de limpeza: esses
+    campos também podem pertencer a uma escala legítima criada pelo usuário.
     """
+    ids = tuple(set(ids_escala))
+    if not ids:
+        return
+
     with SessionORM() as db:
-        db.execute(
-            delete(Escala).where(
-                Escala.id_residente == ID_RESIDENTE,
-                Escala.dia_semana == DIA,
-            )
-        )
+        db.execute(delete(Escala).where(Escala.id_escala.in_(ids)))
         db.commit()
 
 
@@ -110,9 +109,10 @@ def _executar_em_paralelo(alvo: Callable[[str, threading.Barrier], None]) -> Non
 
 
 def cenario_sem_protecao() -> dict[str, Any]:
-    _limpar()
     registro = Registro()
     resultados: dict[str, str] = {}
+    ids_criados: set[int] = set()
+    trava_ids = threading.Lock()
 
     def trabalhar(nome: str, barreira: threading.Barrier) -> None:
         with SessionORM() as db:
@@ -135,16 +135,18 @@ def cenario_sem_protecao() -> dict[str, Any]:
                     + ("já existe escala" if existe else "nenhuma escala encontrada"),
                 )
 
-                db.add(
-                    Escala(
-                        dia_semana=DIA,
-                        turno=TURNO,
-                        id_residente=ID_RESIDENTE,
-                        id_preceptor=ID_PRECEPTOR,
-                        id_unidade=ID_UNIDADE,
-                    )
+                escala = Escala(
+                    dia_semana=DIA,
+                    turno=TURNO,
+                    id_residente=ID_RESIDENTE,
+                    id_preceptor=ID_PRECEPTOR,
+                    id_unidade=ID_UNIDADE,
                 )
+                db.add(escala)
                 registro.anotar(nome, "INSERT enviado, aguardando o banco")
+                db.flush()
+                with trava_ids:
+                    ids_criados.add(escala.id_escala)
                 db.commit()
                 registro.anotar(nome, "commit concluído, escala gravada")
                 resultados[nome] = "gravou"
@@ -159,8 +161,10 @@ def cenario_sem_protecao() -> dict[str, Any]:
                 registro.anotar(nome, f"erro de banco: {type(erro.orig).__name__}")
                 resultados[nome] = "erro"
 
-    _executar_em_paralelo(trabalhar)
-    _limpar()
+    try:
+        _executar_em_paralelo(trabalhar)
+    finally:
+        _limpar_ids(ids_criados)
 
     gravaram = sum(1 for v in resultados.values() if v == "gravou")
     return {
@@ -184,9 +188,10 @@ def cenario_sem_protecao() -> dict[str, Any]:
 
 
 def cenario_lock_pessimista() -> dict[str, Any]:
-    _limpar()
     registro = Registro()
     resultados: dict[str, str] = {}
+    ids_criados: set[int] = set()
+    trava_ids = threading.Lock()
 
     def trabalhar(nome: str, barreira: threading.Barrier) -> None:
         with SessionORM() as db:
@@ -220,15 +225,17 @@ def cenario_lock_pessimista() -> dict[str, Any]:
                     db.rollback()
                     return
 
-                db.add(
-                    Escala(
-                        dia_semana=DIA,
-                        turno=TURNO,
-                        id_residente=ID_RESIDENTE,
-                        id_preceptor=ID_PRECEPTOR,
-                        id_unidade=ID_UNIDADE,
-                    )
+                escala = Escala(
+                    dia_semana=DIA,
+                    turno=TURNO,
+                    id_residente=ID_RESIDENTE,
+                    id_preceptor=ID_PRECEPTOR,
+                    id_unidade=ID_UNIDADE,
                 )
+                db.add(escala)
+                db.flush()
+                with trava_ids:
+                    ids_criados.add(escala.id_escala)
                 db.commit()
                 registro.anotar(nome, "commit concluído, bloqueio liberado")
                 resultados[nome] = "gravou"
@@ -237,8 +244,10 @@ def cenario_lock_pessimista() -> dict[str, Any]:
                 registro.anotar(nome, f"erro de banco: {type(erro.orig).__name__}")
                 resultados[nome] = "erro"
 
-    _executar_em_paralelo(trabalhar)
-    _limpar()
+    try:
+        _executar_em_paralelo(trabalhar)
+    finally:
+        _limpar_ids(ids_criados)
 
     gravaram = sum(1 for v in resultados.values() if v == "gravou")
     desistiram = sum(1 for v in resultados.values() if v.startswith("desistiu"))
@@ -264,7 +273,6 @@ def cenario_lock_pessimista() -> dict[str, Any]:
 
 
 def cenario_lock_otimista() -> dict[str, Any]:
-    _limpar()
     registro = Registro()
     resultados: dict[str, str] = {}
 
@@ -284,7 +292,7 @@ def cenario_lock_otimista() -> dict[str, Any]:
     registro.anotar("preparo", f"escala {id_escala} criada na versão {versao_inicial}")
 
     def trabalhar(nome: str, barreira: threading.Barrier) -> None:
-        turno_novo = "manha" if nome == "sessao A" else "noite"
+        unidade_nova = 2 if nome == "sessao A" else 3
         with SessionORM() as db:
             try:
                 _preparar_sessao(db)
@@ -293,8 +301,8 @@ def cenario_lock_otimista() -> dict[str, Any]:
 
                 barreira.wait()
 
-                escala.turno = turno_novo
-                registro.anotar(nome, f"tentando gravar turno={turno_novo}")
+                escala.id_unidade = unidade_nova
+                registro.anotar(nome, f"tentando gravar id_unidade={unidade_nova}")
                 db.commit()
                 registro.anotar(nome, f"commit aceito, versão agora {escala.versao}")
                 resultados[nome] = "gravou"
@@ -310,23 +318,25 @@ def cenario_lock_otimista() -> dict[str, Any]:
                 registro.anotar(nome, f"erro de banco: {type(erro.orig).__name__}")
                 resultados[nome] = "erro"
 
-    _executar_em_paralelo(trabalhar)
+    try:
+        _executar_em_paralelo(trabalhar)
 
-    with SessionORM() as db:
-        final = db.get(Escala, id_escala)
-        if final is not None:
-            registro.anotar(
-                "verificação",
-                f"estado final: turno={final.turno}, versão={final.versao}",
-            )
-    _limpar()
+        with SessionORM() as db:
+            final = db.get(Escala, id_escala)
+            if final is not None:
+                registro.anotar(
+                    "verificação",
+                    f"estado final: id_unidade={final.id_unidade}, versão={final.versao}",
+                )
+    finally:
+        _limpar_ids([id_escala])
 
     gravaram = sum(1 for v in resultados.values() if v == "gravou")
     recusados = sum(1 for v in resultados.values() if v == "recusado pela versão")
     return {
         "cenario": "lock otimista",
         "descricao": (
-            "As duas sessões carregam a mesma escala e mudam o turno. Ninguém "
+            "As duas sessões carregam a mesma escala e mudam a unidade. Ninguém "
             "bloqueia linha: a coluna versao entra no WHERE do UPDATE."
         ),
         "desfecho": (
